@@ -1,5 +1,5 @@
 {
-    "generatedAtUtc":  "2026-07-26T23:06:48Z",
+    "generatedAtUtc":  "2026-07-26T23:48:40Z",
     "services":  {
                      "APIGateway":  {
                                         "path":  "APIGateway/API-Gateway",
@@ -12,14 +12,14 @@
                                             "path":  "AuthenticationService/Backend-Authentication",
                                             "remote":  "https://github.com/fakebook-works/Backend-Authentication.git",
                                             "branch":  "main",
-                                            "commit":  "48ae62647b9ab564405b484d1e6926ece810af44",
+                                            "commit":  "9d297cd6e16cb5a1cde2c705647ca9a38795fdad",
                                             "clean":  true
                                         },
                      "SocialGraph":  {
                                          "path":  "SocialGraphService",
                                          "remote":  "https://github.com/fakebook-works/Backend-SocialGraph.git",
                                          "branch":  "main",
-                                         "commit":  "b71249c6e39b42599c3ce7225eecedbfa310ca59",
+                                         "commit":  "709e0c97fe3158a2daa68675420179494d5a1cf0",
                                          "clean":  true
                                      },
                      "Recommendation":  {
@@ -33,28 +33,28 @@
                                     "path":  "SearchService/Backend-Search",
                                     "remote":  "https://github.com/fakebook-works/Backend-Search.git",
                                     "branch":  "main",
-                                    "commit":  "3ff3050b8a96c7d8934c35b690a023052d151249",
+                                    "commit":  "30ec8cdb34e9a61ffc8e1193410d2fce0370f9e7",
                                     "clean":  true
                                 },
                      "Notification":  {
                                           "path":  "NotificationService",
                                           "remote":  "https://github.com/fakebook-works/Backend-Notification",
                                           "branch":  "main",
-                                          "commit":  "ec39c115ea4ca525ba4f74844de1c58933e1b2b3",
+                                          "commit":  "5b065ffeb946527a4038551bb69391117d912492",
                                           "clean":  true
                                       },
                      "Messenger":  {
                                        "path":  "MessengerService",
                                        "remote":  "https://github.com/fakebook-works/Backend-Messaging.git",
                                        "branch":  "main",
-                                       "commit":  "c09dd72a80f4d81993f743bee2aedb99c71c6483",
+                                       "commit":  "238cd7e1b729a9a315b9c03398dedd615925ba55",
                                        "clean":  true
                                    },
                      "Payment":  {
                                      "path":  "PaymentService/Backend-Payment",
                                      "remote":  "https://github.com/fakebook-works/Backend-Payment.git",
                                      "branch":  "main",
-                                     "commit":  "e3c9894bf28852b184eb4d0c7a8a0f080698cb7f",
+                                     "commit":  "fd7bf870dcc3e650317d08e36b314f79740c5b91",
                                      "clean":  true
                                  },
                      "UploadServer":  {
