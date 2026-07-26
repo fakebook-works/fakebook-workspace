@@ -435,21 +435,34 @@ nhưng chưa commit từ trước, để các bản vá bảo mật nằm tách 
 | Payment | `e422463` | — | `e3c9894` CI |
 | Search | `56c5cb8` | — | `3ff3050` CI |
 | Recommendation | `5c06094` | — | `f1753ec` CI |
-| Frontend | — | — | `1ada88f` CI |
+| Frontend | — | `ad1af47` bão reconnect SSE | `1ada88f` CI |
+| **Workspace** *(mới)* | — | — | `c8e8fdd` khởi tạo repo, `582ce91` secure.md |
 
-Toàn bộ đã push lên `origin/main` của từng repo.
+Bổ sung sau đó: `16bdd46` (Gateway — watchdog phiên cho SSE), `b71249c` (SocialGraph — ghim EF Core),
+`e2a5d41` (Recommendation — ghim Python), `ec39c11` (Notification — bỏ track `obj/`).
 
-Ghi chú vệ sinh repo: `NotificationService` đang **track thư mục `obj/`** trong git
-(`NotificationService/obj/Debug/net8.0/NotificationService.AssemblyInfo.cs`...). Các file build
-artifact này bị cố ý loại khỏi commit nên repo đó còn 2 file "dirty" — nên thêm `obj/` vào
-`.gitignore` và `git rm --cached` chúng.
+Toàn bộ đã push lên `origin/main` của từng repo. **Cả 11 repo hiện sạch, không còn thay đổi chưa
+commit.**
 
-> ⚠️ **`docker-compose.yml` và file này chưa được version control.** Thư mục `D:\Fakebook` có
-> `.git` nhưng **rỗng**, nên root không phải một git repo hợp lệ và mọi lệnh git tại đó đều fail.
-> `docker-compose.yml` (492 dòng), `scripts/` (~30KB PowerShell), `README.md`, `docs/`, `.env.example`
-> và `secure.md` đều đang nằm ngoài git. Khuyến nghị tạo một repo `fakebook-workspace` chứa các file
-> này, khai báo 10 service làm submodule hoặc dùng manifest ghi commit SHA — nếu không, không thể tái
-> tạo lại một deployment đã chạy và mất máy là mất toàn bộ tầng điều phối.
+### Repo workspace
+
+`D:\Fakebook` trước đây chỉ có thư mục `.git` **rỗng** nên root không phải git repo hợp lệ và mọi
+lệnh git tại đó đều fail — `docker-compose.yml` (492 dòng), toàn bộ `scripts/`, `docs/`, `README.md`,
+`.env.example` và chính file này đều nằm ngoài version control. Mất máy là mất toàn bộ tầng điều phối
+trong khi 10 service vẫn an toàn trong repo riêng.
+
+Đã tạo repo **private** `github.com/fakebook-works/fakebook-workspace` chứa 31 file đó. Thư mục 10
+service được ignore để hai lịch sử không trộn vào nhau, cùng với `.env`, `.run/`, `.tools/`, seed
+receipt và build output. `scripts/check-secrets.ps1` xác nhận **không có secret nào lọt vào file
+được track**.
+
+Kèm theo `services.manifest.json` + `scripts/update-manifest.ps1` ghi remote/branch/commit của cả 10
+service — đây là thứ cho phép ghép một bản `docker-compose.yml` với đúng các build đã được kiểm
+chứng cùng nó. Script cảnh báo khi service còn thay đổi chưa commit, vì khi đó commit id ghi lại
+không mô tả đúng thứ đang chạy.
+
+> Repo để **private** có chủ đích: file này mô tả chi tiết các lỗ hổng **chưa vá** kèm `file:line`.
+> Nếu sau này muốn chuyển sang public, phải tách `secure.md` ra khỏi repo trước.
 
 ---
 
