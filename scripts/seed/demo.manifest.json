@@ -1,0 +1,26 @@
+{
+  "users": [
+    { "alias": "alice", "name": "Alice Nguyen", "email": "alice.demo@fakebook.local", "gender": true, "birthdate": "1995-04-12", "location": "Ho Chi Minh City" },
+    { "alias": "bob", "name": "Bob Tran", "email": "bob.demo@fakebook.local", "gender": true, "birthdate": "1993-09-08", "location": "Da Nang" },
+    { "alias": "carol", "name": "Carol Le", "email": "carol.demo@fakebook.local", "gender": false, "birthdate": "1997-02-21", "location": "Ha Noi" },
+    { "alias": "dave", "name": "Dave Pham", "email": "dave.demo@fakebook.local", "gender": true, "birthdate": "1991-12-03", "location": "Can Tho" },
+    { "alias": "erin", "name": "Erin Vo", "email": "erin.demo@fakebook.local", "gender": false, "birthdate": "1998-06-17", "location": "Hue" },
+    { "alias": "frank", "name": "Frank Do", "email": "frank.demo@fakebook.local", "gender": true, "birthdate": "1994-11-29", "location": "Hai Phong" }
+  ],
+  "friendships": [
+    ["alice", "bob"],
+    ["alice", "carol"],
+    ["bob", "dave"]
+  ],
+  "follows": [
+    ["carol", "bob"],
+    ["erin", "alice"]
+  ],
+  "blocks": [
+    ["dave", "erin"]
+  ],
+  "groups": [
+    { "alias": "developers", "owner": "alice", "name": "Fakebook Developers", "bio": "Public community for Fakebook and microservice development.", "privacy": 0, "members": ["bob", "carol"] },
+    { "alias": "lab", "owner": "bob", "name": "Microservice Lab", "bio": "Private architecture and reliability experiments.", "privacy": 1, "members": ["alice", "carol"] }
+  ]
+}

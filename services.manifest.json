@@ -1,0 +1,75 @@
+{
+    "generatedAtUtc":  "2026-07-26T23:06:48Z",
+    "services":  {
+                     "APIGateway":  {
+                                        "path":  "APIGateway/API-Gateway",
+                                        "remote":  "https://github.com/fakebook-works/API-Gateway.git",
+                                        "branch":  "main",
+                                        "commit":  "16bdd46bb6d10d8a8c9d989509e4f5d3b3b1a8c2",
+                                        "clean":  true
+                                    },
+                     "Authentication":  {
+                                            "path":  "AuthenticationService/Backend-Authentication",
+                                            "remote":  "https://github.com/fakebook-works/Backend-Authentication.git",
+                                            "branch":  "main",
+                                            "commit":  "48ae62647b9ab564405b484d1e6926ece810af44",
+                                            "clean":  true
+                                        },
+                     "SocialGraph":  {
+                                         "path":  "SocialGraphService",
+                                         "remote":  "https://github.com/fakebook-works/Backend-SocialGraph.git",
+                                         "branch":  "main",
+                                         "commit":  "b71249c6e39b42599c3ce7225eecedbfa310ca59",
+                                         "clean":  true
+                                     },
+                     "Recommendation":  {
+                                            "path":  "RecommendationService/Backend-Recommendation",
+                                            "remote":  "https://github.com/fakebook-works/Backend-Recommendation.git",
+                                            "branch":  "main",
+                                            "commit":  "e2a5d416bb20a0af45126e8fee6af23c2e9405a6",
+                                            "clean":  true
+                                        },
+                     "Search":  {
+                                    "path":  "SearchService/Backend-Search",
+                                    "remote":  "https://github.com/fakebook-works/Backend-Search.git",
+                                    "branch":  "main",
+                                    "commit":  "3ff3050b8a96c7d8934c35b690a023052d151249",
+                                    "clean":  true
+                                },
+                     "Notification":  {
+                                          "path":  "NotificationService",
+                                          "remote":  "https://github.com/fakebook-works/Backend-Notification",
+                                          "branch":  "main",
+                                          "commit":  "ec39c115ea4ca525ba4f74844de1c58933e1b2b3",
+                                          "clean":  true
+                                      },
+                     "Messenger":  {
+                                       "path":  "MessengerService",
+                                       "remote":  "https://github.com/fakebook-works/Backend-Messaging.git",
+                                       "branch":  "main",
+                                       "commit":  "c09dd72a80f4d81993f743bee2aedb99c71c6483",
+                                       "clean":  true
+                                   },
+                     "Payment":  {
+                                     "path":  "PaymentService/Backend-Payment",
+                                     "remote":  "https://github.com/fakebook-works/Backend-Payment.git",
+                                     "branch":  "main",
+                                     "commit":  "e3c9894bf28852b184eb4d0c7a8a0f080698cb7f",
+                                     "clean":  true
+                                 },
+                     "UploadServer":  {
+                                          "path":  "UploadSever/Upload-Server",
+                                          "remote":  "https://github.com/fakebook-works/Upload-Server.git",
+                                          "branch":  "main",
+                                          "commit":  "69c4ae25bd807552ffef9938dcc5bc34b1c6481d",
+                                          "clean":  true
+                                      },
+                     "Frontend":  {
+                                      "path":  "Frontend/Frontend",
+                                      "remote":  "https://github.com/fakebook-works/Frontend.git",
+                                      "branch":  "main",
+                                      "commit":  "ad1af47e593646f16ab89c1347c9c6f0a92c2082",
+                                      "clean":  true
+                                  }
+                 }
+}
