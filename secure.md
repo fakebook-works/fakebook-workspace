@@ -7,8 +7,8 @@ Ngày kiểm thử: 27/07/2026 · Phạm vi: toàn bộ 10 service + edge nginx 
 ## 1. Tóm tắt
 
 Kiểm thử bảo mật toàn hệ thống ghi nhận **16 lỗ hổng** đã được xác minh trên mã nguồn thật, trong đó
-**1 lỗ hổng cho phép phá hoại dữ liệu không thể phục hồi**. **Đã vá 9/16**, kèm **38 test hồi quy
-mới** (SocialGraph +22, Upload +7, Auth +8, Gateway +1); 1 mục cần thao tác thủ công trên
+**1 lỗ hổng cho phép phá hoại dữ liệu không thể phục hồi**. **Đã vá 10/16**, kèm **44 test hồi quy
+mới** (SocialGraph +22, Upload +7, Auth +8, Gateway +4, Frontend +3); 1 mục cần thao tác thủ công trên
 PostgreSQL server (mục 5.1) và 6 mục còn lại được xếp thứ tự ở mục 9.
 
 Song song, hai API duy nhất chặn frontend đã được bổ sung và **CI chạy test đã được bật cho cả 10
@@ -51,7 +51,7 @@ lại ở ba nơi khác nhau nên rò ở đường Story; (2) **sự tin cậy 
 | 5 | Khoá tài khoản nạn nhân từ xa qua bộ đếm đăng nhập | Medium | ✅ Đã vá |
 | 6 | Liệt kê tài khoản qua `resendEmailVerification` / `login` | Medium | ✅ Đã vá |
 | 7 | Toàn hệ thống dùng chung 1 tài khoản PostgreSQL, mật khẩu 9 ký tự | Medium | ⚠️ Cần thao tác thủ công |
-| 8 | Thu hồi phiên không tức thì với stream SSE đang mở | Medium | ⏳ Chưa vá |
+| 8 | Thu hồi phiên không tức thì với stream SSE đang mở | Medium | ✅ Đã vá |
 | 9 | Block không áp dụng ở tag/mention, danh sách người dùng, bình luận | Medium | ⏳ Chưa vá |
 | 10 | Cookie refresh token gửi tới Upload Server ở mọi request `/media` | Low | ✅ Đã vá |
 | 11 | Khoá ký JWT dùng chung cho Auth/Gateway/Upload (HS256) | Low | ⏳ Chưa vá |
@@ -61,7 +61,7 @@ lại ở ba nơi khác nhau nên rò ở đường Story; (2) **sự tin cậy 
 | 15 | Phiên không có thời hạn tuyệt đối | Low | ⏳ Chưa vá |
 | 16 | Edge nginx không đặt header bảo mật nào (clickjacking) | Low | ✅ Đã vá (trừ CSP) |
 
-**Đã vá 9/16.** Ba mục Medium còn lại (#8, #9) và các mục Low được mô tả ở phần 9.
+**Đã vá 10/16.** Mục Medium còn lại duy nhất là #9; các mục Low được mô tả ở phần 9.
 
 ---
 
