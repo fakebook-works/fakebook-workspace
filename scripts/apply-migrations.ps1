@@ -9,7 +9,7 @@
     cleanly. This wrapper runs them through scripts/Fakebook.Maintenance instead, which
     already carries the Npgsql client and reads the same .env.
 
-    Windows PowerShell 5.1 cannot load the .NET 8 Npgsql assembly directly, which is why
+    Windows PowerShell 5.1 cannot load the .NET 10 Npgsql assembly directly, which is why
     this delegates rather than connecting itself.
 
     Do not confuse this with Fakebook.Maintenance's own "apply" command: that TRUNCATEs
@@ -44,6 +44,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
+$dotnet = & (Join-Path $PSScriptRoot 'resolve-dotnet.ps1')
 
 if (-not $WritersStopped) {
     throw "Pass -WritersStopped to confirm the services are stopped. Index builds lock the tables they touch."
@@ -60,7 +61,7 @@ if (-not (Test-Path -LiteralPath $EnvironmentFile)) { throw "Environment file no
 $arguments += @('--env-file', (Resolve-Path -LiteralPath $EnvironmentFile).Path)
 
 Write-Host "Applying migrations via Fakebook.Maintenance..."
-& dotnet @arguments
+& $dotnet @arguments
 if ($LASTEXITCODE -ne 0) {
     throw "Migration run failed with exit code $LASTEXITCODE."
 }

@@ -8,16 +8,32 @@ string[] managedSchemas = ["auth", "social_graph", "recommendation", "search", "
 
 if (args.Length == 0)
 {
-    Fail("Usage: Fakebook.Maintenance <preflight|apply|migrate|verify|invariants|history|activate-users> [options]");
+    Fail("Usage: Fakebook.Maintenance <generate-jwt-keys|preflight|apply|migrate|verify|invariants|history|security-audit|verify-service-roles|rotate-owner-password|demote-owner|activate-users> [options]");
 }
 
 var command = args[0].ToLowerInvariant();
 var options = Arguments.Parse(args.Skip(1).ToArray());
-LoadEnvironmentFile(options.Value("env-file"));
+var environmentFile = options.Value("env-file");
+LoadEnvironmentFile(environmentFile);
+var workspace = FindWorkspaceRoot(AppContext.BaseDirectory);
+if (command == "generate-jwt-keys")
+{
+    if (string.IsNullOrWhiteSpace(environmentFile))
+        Fail("generate-jwt-keys requires --env-file.");
+    var resolvedEnvironmentFile = Path.GetFullPath(environmentFile!);
+    GenerateJwtKeys(resolvedEnvironmentFile, options.Flag("rotate"));
+    Print(new
+    {
+        success = true,
+        environmentFile = resolvedEnvironmentFile,
+        rotated = options.Flag("rotate"),
+        privateKeyPrinted = false
+    }, options.Flag("json"));
+    return;
+}
 var target = DatabaseTarget.FromEnvironment();
 var uploadPath = NormalizeOptionalPath(options.Value("upload-path"));
 var uploadTarget = options.Value("upload-target") ?? uploadPath;
-var workspace = FindWorkspaceRoot(AppContext.BaseDirectory);
 
 await using var connection = new NpgsqlConnection(target.ConnectionString);
 await connection.OpenAsync();
@@ -26,6 +42,188 @@ var fingerprint = CreateFingerprint(target, identity, managedSchemas, uploadTarg
 
 switch (command)
 {
+    case "security-audit":
+    {
+        var roles = new List<object>();
+        await using (var roleCommand = new NpgsqlCommand(
+                         """
+                         SELECT rolname, rolsuper, rolcreatedb, rolcreaterole, rolcanlogin, rolbypassrls, oid = 10
+                         FROM pg_roles
+                         WHERE rolname = current_user OR rolname LIKE 'fakebook\_%'
+                         ORDER BY rolname;
+                         """,
+                         connection))
+        await using (var reader = await roleCommand.ExecuteReaderAsync())
+        {
+            while (await reader.ReadAsync())
+            {
+                roles.Add(new
+                {
+                    name = reader.GetString(0),
+                    superuser = reader.GetBoolean(1),
+                    createDatabase = reader.GetBoolean(2),
+                    createRole = reader.GetBoolean(3),
+                    canLogin = reader.GetBoolean(4),
+                    bypassRowLevelSecurity = reader.GetBoolean(5),
+                    bootstrapRole = reader.GetBoolean(6)
+                });
+            }
+        }
+
+        var schemas = new List<object>();
+        await using (var schemaCommand = new NpgsqlCommand(
+                         """
+                         SELECT n.nspname,
+                                pg_get_userbyid(n.nspowner),
+                                has_schema_privilege('public', n.oid, 'USAGE'),
+                                has_schema_privilege(current_user, n.oid, 'CREATE')
+                         FROM pg_namespace n
+                         WHERE n.nspname = ANY (@schemas) OR n.nspname = 'public'
+                         ORDER BY n.nspname;
+                         """,
+                         connection))
+        {
+            schemaCommand.Parameters.AddWithValue("schemas", managedSchemas);
+            await using var reader = await schemaCommand.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+            {
+                schemas.Add(new
+                {
+                    name = reader.GetString(0),
+                    owner = reader.GetString(1),
+                    publicUsage = reader.GetBoolean(2),
+                    currentUserCanCreate = reader.GetBoolean(3)
+                });
+            }
+        }
+
+        var extensions = new List<object>();
+        await using (var extensionCommand = new NpgsqlCommand(
+                         """
+                         SELECT e.extname, n.nspname
+                         FROM pg_extension e
+                         JOIN pg_namespace n ON n.oid = e.extnamespace
+                         ORDER BY e.extname;
+                         """,
+                         connection))
+        await using (var reader = await extensionCommand.ExecuteReaderAsync())
+        {
+            while (await reader.ReadAsync())
+            {
+                extensions.Add(new { name = reader.GetString(0), schema = reader.GetString(1) });
+            }
+        }
+
+        Print(new { fingerprint, identity, roles, schemas, extensions }, options.Flag("json"));
+        break;
+    }
+    case "verify-service-roles":
+    {
+        var specifications = new[]
+        {
+            new ServiceRoleSpecification("AUTH", "fakebook_auth", "auth", false),
+            new ServiceRoleSpecification("SOCIALGRAPH", "fakebook_social_graph", "social_graph", false),
+            new ServiceRoleSpecification("RECOMMENDATION", "fakebook_recommendation", "recommendation", true),
+            new ServiceRoleSpecification("SEARCH", "fakebook_search", "search", false),
+            new ServiceRoleSpecification("NOTIFICATION", "fakebook_notification", "notification", false),
+            new ServiceRoleSpecification("MESSENGER", "fakebook_messenger", "messenger", false),
+            new ServiceRoleSpecification("PAYMENT", "fakebook_payment", "payment", false)
+        };
+
+        var results = new List<ServiceRoleVerification>();
+        foreach (var specification in specifications)
+        {
+            var configuredUser = RequiredEnvironment($"{specification.EnvironmentPrefix}_DB_USER");
+            var configuredPassword = RequiredEnvironment($"{specification.EnvironmentPrefix}_DB_PASSWORD");
+            if (!configuredUser.Equals(specification.Role, StringComparison.Ordinal))
+                Fail($"{specification.EnvironmentPrefix}_DB_USER must be '{specification.Role}'.");
+
+            results.Add(await VerifyServiceRoleAsync(
+                connection,
+                target,
+                specification,
+                configuredPassword,
+                managedSchemas));
+        }
+
+        var success = results.All(result => result.Success);
+        Print(new
+        {
+            success,
+            fingerprint,
+            database = identity.Database,
+            roles = results
+        }, options.Flag("json"));
+        if (!success) Environment.ExitCode = 2;
+        break;
+    }
+    case "demote-owner":
+    {
+        if (!options.Flag("writers-stopped"))
+            Fail("demote-owner requires --writers-stopped.");
+        if (!string.Equals(options.Value("confirm"), fingerprint, StringComparison.OrdinalIgnoreCase))
+            Fail($"Fingerprint mismatch. Current fingerprint is {fingerprint}.");
+        if (!identity.User.Equals("fakebook", StringComparison.Ordinal))
+            Fail("demote-owner must run as the dedicated fakebook migration owner.");
+
+        await using (var bootstrapCommand = new NpgsqlCommand(
+                         "SELECT oid = 10 FROM pg_roles WHERE rolname = current_user;",
+                         connection))
+        {
+            if (Convert.ToBoolean(await bootstrapCommand.ExecuteScalarAsync()))
+            {
+                Fail(
+                    "PostgreSQL does not permit removing SUPERUSER from the bootstrap role. " +
+                    "Keep this credential outside runtime containers or create a separate migration owner with a cluster administrator.");
+            }
+        }
+
+        await using var demotionCommand = new NpgsqlCommand(
+            $"ALTER ROLE {Quote(identity.User)} NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS NOINHERIT;",
+            connection);
+        await demotionCommand.ExecuteNonQueryAsync();
+        Print(new
+        {
+            success = true,
+            fingerprint,
+            role = identity.User,
+            superuser = false,
+            createDatabase = false,
+            createRole = false,
+            bypassRowLevelSecurity = false,
+            inherits = false
+        }, options.Flag("json"));
+        break;
+    }
+    case "rotate-owner-password":
+    {
+        if (!options.Flag("writers-stopped"))
+            Fail("rotate-owner-password requires --writers-stopped.");
+        if (!string.Equals(options.Value("confirm"), fingerprint, StringComparison.OrdinalIgnoreCase))
+            Fail($"Fingerprint mismatch. Current fingerprint is {fingerprint}.");
+        if (identity.User.StartsWith("fakebook_", StringComparison.Ordinal))
+            Fail("A runtime service role cannot be used as the migration owner.");
+        var replacement = RequiredEnvironment("NEW_DB_PASSWORD");
+        if (Encoding.UTF8.GetByteCount(replacement) < 32)
+            Fail("NEW_DB_PASSWORD must contain at least 32 UTF-8 bytes.");
+        if (CryptographicOperations.FixedTimeEquals(
+                Encoding.UTF8.GetBytes(replacement),
+                Encoding.UTF8.GetBytes(target.Password)))
+            Fail("NEW_DB_PASSWORD must differ from the current password.");
+
+        await using var rotationCommand = new NpgsqlCommand(
+            $"ALTER ROLE {Quote(identity.User)} PASSWORD {QuoteLiteral(replacement)};",
+            connection);
+        await rotationCommand.ExecuteNonQueryAsync();
+        Print(new
+        {
+            success = true,
+            fingerprint,
+            role = identity.User,
+            passwordPrinted = false
+        }, options.Flag("json"));
+        break;
+    }
     case "preflight":
     {
         var tables = await DiscoverTablesAsync(connection, managedSchemas);
@@ -329,6 +527,169 @@ static async Task<long> ScalarAsync(NpgsqlConnection connection, string sql)
     return Convert.ToInt64(await command.ExecuteScalarAsync() ?? 0L);
 }
 
+static async Task<ServiceRoleVerification> VerifyServiceRoleAsync(
+    NpgsqlConnection administrator,
+    DatabaseTarget target,
+    ServiceRoleSpecification specification,
+    string password,
+    string[] managedSchemas)
+{
+    var metadata = new RoleMetadata(false, false, false, false, false, false);
+    await using (var command = new NpgsqlCommand(
+                     """
+                     SELECT rolcanlogin, rolsuper, rolcreatedb, rolcreaterole, rolinherit, rolbypassrls
+                     FROM pg_roles
+                     WHERE rolname = @role;
+                     """,
+                     administrator))
+    {
+        command.Parameters.AddWithValue("role", specification.Role);
+        await using var reader = await command.ExecuteReaderAsync();
+        if (await reader.ReadAsync())
+        {
+            metadata = new RoleMetadata(
+                Exists: true,
+                CanLogin: reader.GetBoolean(0),
+                Superuser: reader.GetBoolean(1),
+                CreateDatabase: reader.GetBoolean(2),
+                CreateRole: reader.GetBoolean(3),
+                Inherits: reader.GetBoolean(4),
+                BypassRowLevelSecurity: reader.GetBoolean(5));
+        }
+    }
+
+    var usableSchemas = new List<string>();
+    var creatableSchemas = new List<string>();
+    foreach (var schema in managedSchemas.Append("public"))
+    {
+        await using var command = new NpgsqlCommand(
+            "SELECT has_schema_privilege(@role, @schema, 'USAGE'), has_schema_privilege(@role, @schema, 'CREATE');",
+            administrator);
+        command.Parameters.AddWithValue("role", specification.Role);
+        command.Parameters.AddWithValue("schema", schema);
+        await using var reader = await command.ExecuteReaderAsync();
+        await reader.ReadAsync();
+        if (reader.GetBoolean(0)) usableSchemas.Add(schema);
+        if (reader.GetBoolean(1)) creatableSchemas.Add(schema);
+    }
+
+    var missingOwnTablePrivileges = await CountTablePrivilegeFailuresAsync(
+        administrator, specification.Role, specification.Schema, expectGranted: true);
+    var crossSchemaTablePrivileges = 0L;
+    foreach (var schema in managedSchemas.Where(schema => schema != specification.Schema))
+    {
+        crossSchemaTablePrivileges += await CountTablePrivilegeFailuresAsync(
+            administrator, specification.Role, schema, expectGranted: false);
+    }
+
+    var missingOwnSequencePrivileges = await CountSequencePrivilegeFailuresAsync(
+        administrator, specification.Role, specification.Schema, expectGranted: true);
+    var crossSchemaSequencePrivileges = 0L;
+    foreach (var schema in managedSchemas.Where(schema => schema != specification.Schema))
+    {
+        crossSchemaSequencePrivileges += await CountSequencePrivilegeFailuresAsync(
+            administrator, specification.Role, schema, expectGranted: false);
+    }
+
+    string? connectionError = null;
+    string? connectedAs = null;
+    try
+    {
+        var builder = new NpgsqlConnectionStringBuilder(target.ConnectionString)
+        {
+            Username = specification.Role,
+            Password = password,
+            SearchPath = specification.PublicUsageRequired
+                ? $"{specification.Schema},public"
+                : specification.Schema,
+            ApplicationName = $"fakebook-role-verifier-{specification.Schema}"
+        };
+        await using var serviceConnection = new NpgsqlConnection(builder.ConnectionString);
+        await serviceConnection.OpenAsync();
+        await using var identityCommand = new NpgsqlCommand("SELECT current_user;", serviceConnection);
+        connectedAs = Convert.ToString(await identityCommand.ExecuteScalarAsync());
+    }
+    catch (Exception exception) when (exception is NpgsqlException or TimeoutException)
+    {
+        connectionError = exception.Message;
+    }
+
+    var expectedUsage = new HashSet<string>(StringComparer.Ordinal)
+    {
+        specification.Schema
+    };
+    if (specification.PublicUsageRequired) expectedUsage.Add("public");
+
+    var actualUsage = usableSchemas.ToHashSet(StringComparer.Ordinal);
+    var success = metadata.Exists && metadata.CanLogin && !metadata.Superuser &&
+                  !metadata.CreateDatabase && !metadata.CreateRole && !metadata.Inherits &&
+                  !metadata.BypassRowLevelSecurity && actualUsage.SetEquals(expectedUsage) &&
+                  creatableSchemas.Count == 0 && missingOwnTablePrivileges == 0 &&
+                  crossSchemaTablePrivileges == 0 && missingOwnSequencePrivileges == 0 &&
+                  crossSchemaSequencePrivileges == 0 && connectionError is null &&
+                  connectedAs == specification.Role;
+
+    return new ServiceRoleVerification(
+        specification.Role,
+        specification.Schema,
+        success,
+        connectedAs,
+        connectionError,
+        metadata,
+        usableSchemas,
+        creatableSchemas,
+        missingOwnTablePrivileges,
+        crossSchemaTablePrivileges,
+        missingOwnSequencePrivileges,
+        crossSchemaSequencePrivileges);
+}
+
+static async Task<long> CountTablePrivilegeFailuresAsync(
+    NpgsqlConnection connection,
+    string role,
+    string schema,
+    bool expectGranted)
+{
+    const string allPrivileges =
+        "has_table_privilege(@role, quote_ident(table_schema) || '.' || quote_ident(table_name), 'SELECT') " +
+        "AND has_table_privilege(@role, quote_ident(table_schema) || '.' || quote_ident(table_name), 'INSERT') " +
+        "AND has_table_privilege(@role, quote_ident(table_schema) || '.' || quote_ident(table_name), 'UPDATE') " +
+        "AND has_table_privilege(@role, quote_ident(table_schema) || '.' || quote_ident(table_name), 'DELETE')";
+    const string anyPrivilege =
+        "has_table_privilege(@role, quote_ident(table_schema) || '.' || quote_ident(table_name), 'SELECT') " +
+        "OR has_table_privilege(@role, quote_ident(table_schema) || '.' || quote_ident(table_name), 'INSERT') " +
+        "OR has_table_privilege(@role, quote_ident(table_schema) || '.' || quote_ident(table_name), 'UPDATE') " +
+        "OR has_table_privilege(@role, quote_ident(table_schema) || '.' || quote_ident(table_name), 'DELETE')";
+    var predicate = expectGranted ? $"NOT ({allPrivileges})" : $"({anyPrivilege})";
+    await using var command = new NpgsqlCommand(
+        $"SELECT count(*) FROM information_schema.tables WHERE table_schema = @schema AND table_type = 'BASE TABLE' AND {predicate};",
+        connection);
+    command.Parameters.AddWithValue("role", role);
+    command.Parameters.AddWithValue("schema", schema);
+    return Convert.ToInt64(await command.ExecuteScalarAsync() ?? 0L);
+}
+
+static async Task<long> CountSequencePrivilegeFailuresAsync(
+    NpgsqlConnection connection,
+    string role,
+    string schema,
+    bool expectGranted)
+{
+    const string allPrivileges =
+        "has_sequence_privilege(@role, quote_ident(sequence_schema) || '.' || quote_ident(sequence_name), 'USAGE') " +
+        "AND has_sequence_privilege(@role, quote_ident(sequence_schema) || '.' || quote_ident(sequence_name), 'SELECT')";
+    const string anyPrivilege =
+        "has_sequence_privilege(@role, quote_ident(sequence_schema) || '.' || quote_ident(sequence_name), 'USAGE') " +
+        "OR has_sequence_privilege(@role, quote_ident(sequence_schema) || '.' || quote_ident(sequence_name), 'SELECT')";
+    var predicate = expectGranted ? $"NOT ({allPrivileges})" : $"({anyPrivilege})";
+    await using var command = new NpgsqlCommand(
+        $"SELECT count(*) FROM information_schema.sequences WHERE sequence_schema = @schema AND {predicate};",
+        connection);
+    command.Parameters.AddWithValue("role", role);
+    command.Parameters.AddWithValue("schema", schema);
+    return Convert.ToInt64(await command.ExecuteScalarAsync() ?? 0L);
+}
+
 static int CleanUploadDirectory(string path, string workspace)
 {
     var fullPath = Path.GetFullPath(path);
@@ -381,6 +742,97 @@ static bool IsLocalDevelopmentTarget(string host, string serverAddress)
 
 static string? NormalizeOptionalPath(string? value) => string.IsNullOrWhiteSpace(value) ? null : Path.GetFullPath(value);
 static string Quote(string identifier) => $"\"{identifier.Replace("\"", "\"\"")}\"";
+static string QuoteLiteral(string value) => $"'{value.Replace("'", "''")}'";
+static string RequiredEnvironment(string name) =>
+    Environment.GetEnvironmentVariable(name) is { Length: > 0 } value
+        ? value
+        : throw new InvalidOperationException($"{name} is required.");
+
+static void GenerateJwtKeys(string environmentFile, bool rotate)
+{
+    if (!File.Exists(environmentFile)) Fail($"Environment file not found: {environmentFile}");
+    var lines = File.ReadAllLines(environmentFile).ToList();
+    var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+    foreach (var raw in lines)
+    {
+        var line = raw.Trim();
+        if (line.Length == 0 || line.StartsWith('#')) continue;
+        var separator = line.IndexOf('=');
+        if (separator <= 0) continue;
+        values[line[..separator].Trim()] = line[(separator + 1)..].Trim().Trim('"');
+    }
+
+    values.TryGetValue("JWT_PRIVATE_KEY_BASE64", out var privateKey);
+    values.TryGetValue("JWT_PUBLIC_KEY_BASE64", out var publicKey);
+    values.TryGetValue("JWT_KEY_ID", out var keyId);
+    var hasExisting = !string.IsNullOrWhiteSpace(privateKey) &&
+                      !string.IsNullOrWhiteSpace(publicKey) &&
+                      !string.IsNullOrWhiteSpace(keyId);
+    if (hasExisting && !rotate)
+    {
+        if (!IsValidJwtKeyPair(privateKey!, publicKey!))
+            Fail("Existing JWT RSA material is invalid or mismatched; rerun with --rotate.");
+        return;
+    }
+
+    using var rsa = RSA.Create(3072);
+    privateKey = Convert.ToBase64String(rsa.ExportPkcs8PrivateKey());
+    publicKey = Convert.ToBase64String(rsa.ExportSubjectPublicKeyInfo());
+    var keyFingerprint = Convert.ToHexString(SHA256.HashData(Convert.FromBase64String(publicKey)))[..12].ToLowerInvariant();
+    keyId = $"fakebook-rs256-{DateTime.UtcNow:yyyyMMdd}-{keyFingerprint}";
+
+    var updates = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+    {
+        ["JWT_PRIVATE_KEY_BASE64"] = privateKey,
+        ["JWT_PUBLIC_KEY_BASE64"] = publicKey,
+        ["JWT_KEY_ID"] = keyId
+    };
+    if (!values.ContainsKey("JWT_LEGACY_SIGNING_KEY")) updates["JWT_LEGACY_SIGNING_KEY"] = string.Empty;
+
+    var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    for (var index = 0; index < lines.Count; index++)
+    {
+        var separator = lines[index].IndexOf('=');
+        if (separator <= 0) continue;
+        var name = lines[index][..separator].Trim();
+        if (!updates.TryGetValue(name, out var value)) continue;
+        lines[index] = $"{name}={value}";
+        seen.Add(name);
+    }
+    foreach (var update in updates.Where(update => !seen.Contains(update.Key)))
+        lines.Add($"{update.Key}={update.Value}");
+
+    var temporaryFile = environmentFile + $".{Guid.NewGuid():N}.tmp";
+    try
+    {
+        File.WriteAllLines(temporaryFile, lines, new UTF8Encoding(false));
+        File.Move(temporaryFile, environmentFile, overwrite: true);
+    }
+    finally
+    {
+        if (File.Exists(temporaryFile)) File.Delete(temporaryFile);
+    }
+}
+
+static bool IsValidJwtKeyPair(string privateKeyBase64, string publicKeyBase64)
+{
+    try
+    {
+        using var privateRsa = RSA.Create();
+        privateRsa.ImportPkcs8PrivateKey(Convert.FromBase64String(privateKeyBase64), out var privateBytes);
+        using var publicRsa = RSA.Create();
+        publicRsa.ImportSubjectPublicKeyInfo(Convert.FromBase64String(publicKeyBase64), out var publicBytes);
+        if (privateBytes == 0 || publicBytes == 0 || privateRsa.KeySize < 2048 || publicRsa.KeySize < 2048)
+            return false;
+        var challenge = RandomNumberGenerator.GetBytes(32);
+        var signature = privateRsa.SignData(challenge, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        return publicRsa.VerifyData(challenge, signature, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+    }
+    catch (Exception exception) when (exception is FormatException or CryptographicException)
+    {
+        return false;
+    }
+}
 
 static void LoadEnvironmentFile(string? path)
 {
@@ -456,6 +908,34 @@ sealed record DatabaseTarget(string Host, int Port, string Database, string User
 sealed record DatabaseIdentity(string Database, string User, string ServerAddress);
 sealed record DbTable(string Schema, string Name);
 sealed record TableCount(DbTable Table, long Rows);
+sealed record ServiceRoleSpecification(string EnvironmentPrefix, string Role, string Schema, bool PublicUsageRequired);
+sealed record RoleMetadata(
+    bool Exists,
+    bool CanLogin,
+    bool Superuser,
+    bool CreateDatabase,
+    bool CreateRole,
+    bool Inherits,
+    bool BypassRowLevelSecurity)
+{
+    public RoleMetadata(bool exists, bool superuser, bool createDatabase, bool createRole, bool inherits, bool bypassRowLevelSecurity)
+        : this(exists, false, superuser, createDatabase, createRole, inherits, bypassRowLevelSecurity)
+    {
+    }
+}
+sealed record ServiceRoleVerification(
+    string Role,
+    string Schema,
+    bool Success,
+    string? ConnectedAs,
+    string? ConnectionError,
+    RoleMetadata Metadata,
+    IReadOnlyList<string> UsableSchemas,
+    IReadOnlyList<string> CreatableSchemas,
+    long MissingOwnTablePrivileges,
+    long CrossSchemaTablePrivileges,
+    long MissingOwnSequencePrivileges,
+    long CrossSchemaSequencePrivileges);
 
 sealed class Arguments
 {

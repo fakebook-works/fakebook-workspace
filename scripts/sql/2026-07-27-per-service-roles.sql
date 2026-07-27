@@ -37,9 +37,14 @@
 --
 --   .\scripts\apply-migrations.ps1 -WritersStopped -File .\scripts\sql\2026-07-27-per-service-roles.sql
 --
--- Idempotent: re-running only tops up grants.
+-- Idempotent: re-running rotates the service passwords and reconciles every grant.
 
 BEGIN;
+
+-- PostgreSQL grants EXECUTE on newly-created functions to PUBLIC by default.  Services
+-- are isolated primarily by schema USAGE, but revoking this default keeps a future
+-- accidental schema grant from turning into cross-service execution rights.
+ALTER DEFAULT PRIVILEGES FOR ROLE fakebook REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
 
 DO $$
 DECLARE
@@ -58,16 +63,75 @@ BEGIN
     LOOP
         IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = service.role_name) THEN
             EXECUTE format(
-                'CREATE ROLE %I LOGIN PASSWORD %L',
+                'CREATE ROLE %I LOGIN NOINHERIT PASSWORD %L',
+                service.role_name, service.role_password);
+        ELSE
+            -- A rerun is also the supported password-rotation path.
+            EXECUTE format(
+                'ALTER ROLE %I PASSWORD %L',
                 service.role_name, service.role_password);
         END IF;
 
         -- Never inherited, never able to create more roles or databases.
         EXECUTE format(
-            'ALTER ROLE %I NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS',
+            'ALTER ROLE %I LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS',
             service.role_name);
+    END LOOP;
+END
+$$;
 
-        -- Reach the schema, but not create objects in it: DDL stays with the owner.
+-- Reconcile, rather than merely add, privileges. This closes stale grants left by an
+-- earlier manual setup and makes the verifier meaningful.
+DO $$
+DECLARE
+    service_role text;
+    managed_schema text;
+BEGIN
+    FOREACH service_role IN ARRAY ARRAY[
+        'fakebook_auth', 'fakebook_social_graph', 'fakebook_recommendation',
+        'fakebook_search', 'fakebook_notification', 'fakebook_messenger',
+        'fakebook_payment'
+    ]
+    LOOP
+        FOREACH managed_schema IN ARRAY ARRAY[
+            'auth', 'social_graph', 'recommendation', 'search',
+            'notification', 'messenger', 'payment'
+        ]
+        LOOP
+            EXECUTE format('REVOKE ALL PRIVILEGES ON SCHEMA %I FROM %I', managed_schema, service_role);
+            EXECUTE format('REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA %I FROM %I', managed_schema, service_role);
+            EXECUTE format('REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA %I FROM %I', managed_schema, service_role);
+            EXECUTE format('REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA %I FROM %I', managed_schema, service_role);
+            EXECUTE format(
+                'ALTER DEFAULT PRIVILEGES FOR ROLE fakebook IN SCHEMA %I REVOKE ALL ON TABLES FROM %I',
+                managed_schema, service_role);
+            EXECUTE format(
+                'ALTER DEFAULT PRIVILEGES FOR ROLE fakebook IN SCHEMA %I REVOKE ALL ON SEQUENCES FROM %I',
+                managed_schema, service_role);
+            EXECUTE format(
+                'ALTER DEFAULT PRIVILEGES FOR ROLE fakebook IN SCHEMA %I REVOKE ALL ON FUNCTIONS FROM %I',
+                managed_schema, service_role);
+        END LOOP;
+    END LOOP;
+END
+$$;
+
+DO $$
+DECLARE
+    service record;
+BEGIN
+    FOR service IN
+        SELECT * FROM (VALUES
+            ('fakebook_auth',           'auth'),
+            ('fakebook_social_graph',   'social_graph'),
+            ('fakebook_recommendation', 'recommendation'),
+            ('fakebook_search',         'search'),
+            ('fakebook_notification',   'notification'),
+            ('fakebook_messenger',      'messenger'),
+            ('fakebook_payment',        'payment')
+        ) AS t(role_name, schema_name)
+    LOOP
+        -- Runtime roles can use data in exactly one schema but cannot perform DDL.
         EXECUTE format('GRANT USAGE ON SCHEMA %I TO %I', service.schema_name, service.role_name);
         EXECUTE format(
             'GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA %I TO %I',
@@ -75,22 +139,34 @@ BEGIN
         EXECUTE format(
             'GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA %I TO %I',
             service.schema_name, service.role_name);
+        EXECUTE format(
+            'GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA %I TO %I',
+            service.schema_name, service.role_name);
 
-        -- Tables and sequences a later migration adds are covered without re-running this.
+        -- Objects a later owner-run migration adds receive the same data-only grants.
         EXECUTE format(
-            'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA %I '
+            'ALTER DEFAULT PRIVILEGES FOR ROLE fakebook IN SCHEMA %I '
             'GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO %I',
-            current_user, service.schema_name, service.role_name);
+            service.schema_name, service.role_name);
         EXECUTE format(
-            'ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA %I '
+            'ALTER DEFAULT PRIVILEGES FOR ROLE fakebook IN SCHEMA %I '
             'GRANT USAGE, SELECT ON SEQUENCES TO %I',
-            current_user, service.schema_name, service.role_name);
+            service.schema_name, service.role_name);
+        EXECUTE format(
+            'ALTER DEFAULT PRIVILEGES FOR ROLE fakebook IN SCHEMA %I '
+            'GRANT EXECUTE ON FUNCTIONS TO %I',
+            service.schema_name, service.role_name);
     END LOOP;
 END
 $$;
 
--- The services never create objects, so nothing needs the public schema.
+-- No runtime service may create objects in public. Recommendation alone needs USAGE
+-- because the pgvector extension is installed there and recommendation.embedding is a
+-- public.vector column.
 REVOKE ALL ON SCHEMA public FROM PUBLIC;
+REVOKE ALL ON SCHEMA public FROM fakebook_auth, fakebook_social_graph, fakebook_search,
+    fakebook_notification, fakebook_messenger, fakebook_payment;
+GRANT USAGE ON SCHEMA public TO fakebook_recommendation;
 
 COMMIT;
 

@@ -1,494 +1,369 @@
 # Báo cáo bảo mật hệ thống Fakebook
 
-Ngày kiểm thử: 27/07/2026 · Phạm vi: toàn bộ 10 service + edge nginx + frontend
+**Ngày chốt kiểm tra:** 27/07/2026
+
+**Phạm vi:** workspace điều phối, Gateway, 7 subgraph, Upload Server, Recommendation Python và frontend
+**Mục tiêu:** hoàn tất giai đoạn 3 đang dở, kiểm tra lại hai giai đoạn Claude Code đã push, và tạo một mốc đủ rõ để nhóm quay lại tập trung frontend.
+
+> File này mô tả trạng thái mã nguồn và môi trường Fakebook hiện tại. Không đưa secret,
+> JWT key, mật khẩu hay connection string thật vào báo cáo.
+
+## 1. Kết luận
+
+Tám mục của giai đoạn 3 đã hoàn tất. Các thay đổi quan trọng nhất:
+
+- mỗi service có PostgreSQL login riêng, chỉ có quyền dữ liệu trong schema của mình;
+- toàn bộ đường đọc/ghi SocialGraph liên quan block, tag, mention, comment và danh sách người dùng dùng chung một lớp kiểm tra block hai chiều;
+- đăng ký user không còn để lại tài khoản ma khi Auth thất bại;
+- nonce chống replay được lưu atomically trong Redis dùng chung và fail-closed;
+- session có thời hạn tuyệt đối 90 ngày;
+- JWT chuyển sang RS256, chỉ Auth giữ private key;
+- 8 ứng dụng .NET có OpenTelemetry và HTTP resilience an toàn;
+- toàn bộ project .NET đã chuyển lên .NET 10.
+
+Frontend không bị thay đổi giao diện. Phần frontend của đợt này chỉ nâng toolchain lint để
+loại dependency có CVE và sửa hai chi tiết nội bộ không đổi hành vi, DOM hay CSS.
+
+Hệ thống đã chạy đầy đủ ở host mode và mọi readiness/smoke check đều qua. Có thể quay lại
+tập trung UI. Các giới hạn vận hành còn lại được ghi minh bạch ở mục 8.
+
+## 2. Đối chiếu giai đoạn 3
+
+| # | Hạng mục | Trạng thái | Bằng chứng chính |
+| ---: | --- | --- | --- |
+| 1 | Tách role DB | ✅ Hoàn tất cả code và DB đang dùng | 7 role runtime đăng nhập được, không superuser/createdb/createrole/inherit/bypassrls, không có quyền chéo schema; mật khẩu owner đã rotate |
+| 2 | Vá #9 block ở đường đọc/ghi còn lại | ✅ Hoàn tất | BlockVisibilityService, 7 regression test, lọc group member/admin, like/tag/mention/story viewer/comment author và validate lúc ghi |
+| 3 | Half-commit đăng ký/tài khoản ma | ✅ Hoàn tất | Auth là cổng bắt buộc; projection chỉ chạy sau Auth; lỗi Auth terminal sẽ compensate user SocialGraph |
+| 4 | Nonce sang Redis + fail-closed | ✅ Hoàn tất | Redis SET NX EX, key theo audience, readiness check, lỗi Redis trả 503; .NET/Python và cross-validator test |
+| 5 | Thời hạn tuyệt đối cho phiên | ✅ Hoàn tất | absolute_expires_at, mặc định 90 ngày; refresh/cookie bị chặn bởi deadline tuyệt đối |
+| 6 | JWT RS256 | ✅ Hoàn tất | PKCS#8 private key ở Auth, SPKI public key ở Gateway/Upload, kiểm tra alg và kid; HS256 chỉ còn tùy chọn migration |
+| 7 | OpenTelemetry + Polly | ✅ Hoàn tất | trace/metrics cho ASP.NET, HttpClient, runtime; OTLP optional; retry chỉ cho method an toàn |
+| 8 | .NET 10 | ✅ Hoàn tất | toàn bộ 17 project target net10.0, Docker/CI/global.json dùng .NET 10 |
+
+### 2.1. Lưu ý về hạn .NET
+
+Mốc **10/11/2026** là ngày .NET 8 hết hỗ trợ, không phải hạn của .NET 10. .NET 10 là bản
+LTS và được hỗ trợ tới **14/11/2028** theo lifecycle chính thức của Microsoft:
+<https://learn.microsoft.com/en-ie/lifecycle/products/microsoft-net-and-net-core>.
+
+## 3. Chi tiết triển khai
+
+### 3.1. PostgreSQL least privilege
+
+| Service | Role | Schema |
+| --- | --- | --- |
+| Authentication | fakebook_auth | auth |
+| SocialGraph | fakebook_social_graph | social_graph |
+| Recommendation | fakebook_recommendation | recommendation + USAGE public để dùng pgvector |
+| Search | fakebook_search | search |
+| Notification | fakebook_notification | notification |
+| Messenger | fakebook_messenger | messenger |
+| Payment | fakebook_payment | payment |
+
+Runtime role chỉ có CRUD/sequence cần thiết trong schema sở hữu, không được CREATE schema
+và không có quyền bảng/sequence chéo schema. Compose và host launcher không truyền
+DB_USER/DB_PASSWORD của owner vào service nữa. DDL lúc startup đã tắt; migration chạy bằng
+owner trong maintenance window.
+
+~~~powershell
+.\scripts\provision-database-roles.ps1 -WritersStopped -InitializeCredentials
+.\scripts\rotate-database-owner-password.ps1 -WritersStopped
+~~~
+
+Lần kiểm tra live gần nhất:
+
+- fingerprint DB: 45F140B053B7;
+- cả 7 role: Success=true;
+- missing own-table/sequence privileges: 0;
+- cross-schema table/sequence privileges: 0;
+- public không có USAGE công khai.
+
+Role owner fakebook có OID 10, tức bootstrap superuser của cluster. PostgreSQL không cho
+bootstrap superuser tự bỏ quyền superuser. Vì vậy role này vẫn là migration owner, nhưng
+credential đã được rotate thành secret ngẫu nhiên 32 byte, nằm trong .env gitignored và
+không được đưa vào runtime container. Đây là giới hạn của cluster hiện tại, không phải
+runtime service còn chạy bằng superuser.
+
+### 3.2. Visibility/block kernel của SocialGraph
+
+BlockVisibilityService định nghĩa block hai chiều: nếu A chặn B hoặc B chặn A thì quan hệ
+hiển thị/tương tác giữa hai người bị loại. Kernel này được dùng khi:
+
+- tạo/cập nhật post, reel, comment, tag và mention;
+- đọc feed, group, reel và share source;
+- hydrate liked/tagged/mentioned users;
+- đọc group member/admin, story viewer và comment author;
+- tạo notification/projection liên quan user.
+
+Block không bị privacy, friendship, follow, tag hay mention ghi đè. Tag/mention không cấp
+quyền đọc nội dung.
+
+### 3.3. Đăng ký không còn half-commit
+
+Luồng đăng ký mới:
+
+1. SocialGraph dựng canonical user/profile và outbox.
+2. UserProvisioningCoordinator gọi Auth trước.
+3. Chỉ khi Auth thành công mới dispatch Search, Recommendation, Messenger và projection còn lại.
+4. Projection là idempotent và có retry/dead-letter.
+5. Nếu Auth thất bại terminal, coordinator xóa/compensate canonical user thay vì để lại profile không đăng nhập được.
+6. Auth coi request lặp đúng cặp userId/email là idempotent; không băm BCrypt lại.
+
+### 3.4. Anti-replay dùng Redis
+
+Protocol HMAC vẫn ký method, path/query, timestamp, nonce và SHA-256 body. Thay đổi:
+
+- tất cả validator dùng Redis atomic SET với NX và EX;
+- key có audience/prefix để cô lập target;
+- replay vào replica khác vẫn bị từ chối;
+- thiếu Redis khi enforcement bật làm readiness fail và endpoint trả 503;
+- không có fallback in-memory hoặc fail-open;
+- managed Compose/host đặt RequireSignature=true, SendLegacySecret=false.
+
+Chi tiết wire format: [docs/internal-request-signing.md](docs/internal-request-signing.md).
+
+### 3.5. Session tuyệt đối
+
+Migration 20260727_add_absolute_session_expiry.sql thêm absolute_expires_at.
+
+- deadline mặc định: 90 ngày từ khi tạo session;
+- sliding refresh không thể kéo session qua deadline;
+- expiry token/cookie dùng giá trị nhỏ nhất giữa sliding và absolute expiry;
+- schema, model, repository và config đã đồng bộ;
+- migration đã áp dụng vào DB hiện tại mà không reset dữ liệu.
+
+### 3.6. JWT RS256
+
+- Auth ký bằng RSA private key PKCS#8 tối thiểu 2048 bit.
+- Gateway và Upload chỉ nhận public key SPKI.
+- Token có kid; validator khóa thuật toán ở RS256.
+- JWT_LEGACY_SIGNING_KEY chỉ dùng cho cửa sổ chuyển đổi token HS256 cũ và hiện để trống.
+- Script khởi tạo tạo cặp key đồng bộ và không in key ra terminal.
+
+Việc tách private/public key loại bỏ khả năng một verifier bị compromise có thể tự ký access
+token mới.
+
+### 3.7. OpenTelemetry và resilience
+
+Tám ứng dụng .NET có cùng service defaults:
+
+- ASP.NET Core, outgoing HttpClient và runtime metrics/traces;
+- OTLP exporter chỉ bật khi có endpoint;
+- sample ratio mặc định 10%;
+- không capture body, GraphQL variables, auth header hay secret;
+- health endpoint bị loại khỏi trace noise.
+
+HttpClient dùng Microsoft.Extensions.Http.Resilience (Polly bên dưới). Retry bị vô hiệu cho
+POST/PUT/PATCH/DELETE/CONNECT để tránh nhân đôi mutation; GET/HEAD/OPTIONS mới được retry.
+Recommendation Python áp dụng cùng quy tắc.
+
+Collector Compose được pin image digest. Cấu hình dev xuất trace dạng debug và metrics
+Prometheus; production có thể thay exporter mà không sửa service.
+
+### 3.8. .NET 10
+
+- 17 project target net10.0;
+- SDK local/global: 10.0.302; runtime kiểm tra: 10.0.10;
+- Docker SDK/runtime và GitHub Actions dùng major 10;
+- EF Core, TestHost/MvcTesting, OpenAPI, Npgsql và package framework đã cùng major;
+- Swashbuckle đã chuyển sang API v10.
+
+## 4. Đối chiếu 16 finding ban đầu
+
+| # | Finding | Mức ban đầu | Kết quả hiện tại |
+| ---: | --- | --- | --- |
+| 1 | User xoá media của người khác | High | ✅ ownership + parent reference validation |
+| 2 | Bypass refresh-token filter Gateway | Medium | ✅ field internal + scrub response/cookie scope |
+| 3 | Reel private/story bỏ qua block | Medium | ✅ privacy và block kiểm tra tại read time |
+| 4 | Rate limiter IP thành global bucket | Medium | ✅ partition theo IP/user đúng |
+| 5 | Khoá tài khoản nạn nhân từ xa | Medium | ✅ failure counter chỉ cập nhật ở credential path phù hợp |
+| 6 | Account enumeration login/resend | Medium | ✅ response/timing/status được đồng nhất |
+| 7 | Mọi service dùng chung DB superuser yếu | Medium | ✅ 7 role runtime + rotate owner; xem ngoại lệ bootstrap ở mục 3.1 |
+| 8 | Session revoke không cắt SSE | Medium | ✅ Gateway revalidate session khi stream mở |
+| 9 | Block thiếu ở tag/mention/list/comment | Medium | ✅ kernel block tập trung + regression tests |
+| 10 | Refresh cookie gửi tới Upload | Low | ✅ cookie path hẹp |
+| 11 | HS256 key dùng chung Auth/Gateway/Upload | Low | ✅ RS256 private/public split |
+| 12 | Nonce RAM và signature không fail-closed | Low | ✅ Redis atomic + readiness/503 |
+| 13 | BCrypt CPU exhaustion | Low | ✅ concurrency 2, queue 16, timeout 5s, work factor 10–14 |
+| 14 | Identifier tùy ý vào audit log | Low | ✅ normalize/limit + retention worker |
+| 15 | Session không có absolute lifetime | Low | ✅ absolute_expires_at 90 ngày |
+| 16 | Edge thiếu security headers | Low | ✅ nosniff/frame/referrer/permissions/HSTS phù hợp |
+
+## 5. Finding bổ sung đã kiểm tra
+
+### 5.1. Recommendation SSRF — đã vá
+
+Media embedding fetch chỉ cho host/port allowlist chính xác, resolve DNS rồi chặn dải nguy
+hiểm, tắt redirect, giới hạn bytes/time và tải video vào file tạm có giới hạn trước khi decode.
+
+### 5.2. GraphQL amplification — đã vá
+
+Gateway enforce max execution depth, field-cycle depth, parser fields/nodes/tokens, planner
+expanded nodes, execution timeout/concurrency và rate limit. HTTP batching/multipart
+GraphQL bị tắt. Nhận xét cũ “có cost directive nhưng chưa enforcement” không còn đúng.
+
+### 5.3. Upload chỉ scan 8 KB — nhận xét cũ không còn đúng
+
+8 KB đầu chỉ dùng kiểm tra magic header. Active-content audit đọc toàn bộ stream theo chunk
+64 KB, giữ overlap để bắt signature vắt qua biên và chạy trước khi publish. Test đặt marker
+sau cửa sổ 8 KB cũ và ngay qua biên 64 KB đã pass. Upload có size cap và nosniff.
+
+### 5.4. BCrypt — đã giới hạn đúng
+
+Mọi hash/verify đi qua singleton BCryptPasswordHasher. ConcurrencyLimiter giữ lease tới khi
+BCrypt synchronous thực sự kết thúc; timeout chỉ áp dụng lúc chờ queue, không thả permit
+sớm khi CPU work còn chạy. Work factor do server cấu hình và validate 10–14.
+
+### 5.5. Dependency và supply-chain
+
+- NuGet: không có package vulnerable trong 8 app .NET và maintenance tool.
+- Python: pip-audit không tìm thấy CVE trong requirements.
+- npm: 0 vulnerability sau khi nâng ESLint toolchain; UI/CSS không đổi.
+- Redis và OpenTelemetry Collector image được pin digest.
+- Secret scan không thấy giá trị thật trong file repository.
+
+## 6. Kiểm chứng
+
+### 6.1. Test tự động
+
+| Thành phần | Kết quả |
+| --- | ---: |
+| Authentication | 34/34 |
+| SocialGraph | 221/221 |
+| Search | 34/34 |
+| Notification | 29/29 |
+| Messenger | 61/61 |
+| Payment unit | 35/35 |
+| Upload | 19/19 |
+| Gateway | 35/35 |
+| Recommendation Python | 54/54 |
+| Frontend Vitest | 293/293 |
+| Frontend build/lint | pass |
+| Compose standalone validation | pass |
+
+Tổng: **522 backend/Python test + 293 frontend test = 815 test pass**.
+
+### 6.2. Full-stack smoke
+
+Host launcher đã chạy đồng thời security cache; Auth 1001, Social 1002, Recommendation
+1003, Search 1004, Notification 1005, Messenger 1006, Payment 1007, Gateway 2001,
+Frontend 3001 và Upload 4001. Readiness từng service, Gateway GraphQL, Search/Gateway,
+frontend/upload và kiểm tra Messenger từ chối request không trusted đều pass. Stack đã
+được stop sạch sau test.
+
+### 6.3. Database invariant
+
+~~~text
+invalidAssociations       0
+orphanMedia               0
+adminsWithoutMembership   0
+duplicateDirectPairs      0
+deadLetters              18
+~~~
+
+18 dead-letter là dữ liệu vận hành cũ từ 19–21/07/2026: projection content rỗng và
+recommendation interaction trỏ target chưa có embedding. Code mới coi projection rỗng là
+delete idempotent để không tạo thêm lỗi cùng loại. Không tự ý xoá/rewrite 18 record lịch sử
+trong đợt bảo mật; chúng không phải lỗ hổng, nhưng cần reconciliation riêng nếu muốn
+dashboard sạch tuyệt đối.
+
+Payment Testcontainers chưa chạy trên workstation vì không có Docker daemon. Unit test,
+host full-stack smoke và docker-compose config vẫn pass; CI có Docker cần tiếp tục chạy
+suite integration này.
+
+## 7. Thay đổi dữ liệu và secret
+
+Đợt này không reset bảng, không xoá user/post/message/media và không đổi schema nghiệp vụ
+ngoài trường session tuyệt đối.
+
+Các thay đổi có chủ đích:
+
+1. thêm auth.id_session.absolute_expires_at;
+2. tạo/đồng bộ 7 runtime role least-privilege;
+3. rotate password migration owner;
+4. tạo cặp JWT RSA và kid;
+5. thêm credential role runtime vào .env;
+6. dùng Redis/Garnet cho nonce.
+
+Tất cả secret nằm trong .env gitignored, không được in trong log và không xuất hiện trong
+Git diff.
+
+## 8. Rủi ro chấp nhận và việc vận hành còn lại
+
+Không có mục nào trong 8 việc giai đoạn 3 còn chờ code. Các điểm sau là ranh giới kiến trúc
+hoặc vận hành:
+
+1. **Bootstrap DB owner vẫn là superuser:** PostgreSQL không cho OID 10 tự demote. Giữ role
+   offline cho migration, không truyền credential vào runtime. Muốn bỏ hoàn toàn cần một
+   DBA/cluster admin khác tạo migration owner mới.
+2. **Internal HTTP:** TLS terminate ở Tailscale edge và host-to-host được tailnet mã hóa.
+   HMAC bảo vệ integrity/replay. mTLS từng service là milestone riêng nếu threat model đổi.
+3. **CSP:** chưa ép CSP nghiêm vì media/blob/dynamic asset có thể vỡ frontend. Các header
+   còn lại đã bật; CSP nên rollout report-only trước.
+4. **Legacy JWT verifier:** code còn hỗ trợ HS256 để rollback, nhưng môi trường để legacy
+   key rỗng. Có thể xóa nhánh sau khi chắc chắn token cũ hết hạn.
+5. **OTel production backend:** collector dev đã có; production cần chọn exporter/storage
+   và retention.
+6. **18 dead-letter lịch sử:** cần quyết định retry/discard theo nghiệp vụ, không xóa mù
+   trong security rollout.
+
+## 9. Đối chiếu commit Claude Code và mốc phát hành
+
+Đã kiểm tra history trước khi tiếp tục. Workspace phase 1/2 có các mốc đại diện:
+
+- 582ce91: báo cáo security/orchestration ban đầu;
+- 4b5862d: post-review fixes;
+- b75669c: readiness và không chạy container root;
+- 00e6e94, 8292b15: refresh manifest;
+- b99c7c1: migration runner;
+- 7ad69f2: bản đầu script per-service DB role.
+
+Các repo service cũng đã có commit riêng cho media ownership, story privacy/block,
+Gateway refresh hardening, enumeration/identifier, SSE session watchdog, retention,
+indexing và CI. Giai đoạn 3 tiếp nối các mốc đó, không revert chúng.
+
+Commit phase 3 đã kiểm chứng:
+
+| Repo | Commit |
+| --- | --- |
+| Gateway | 05c729d |
+| Authentication | 4ffbfcd |
+| Frontend toolchain | 4f40a42 |
+| Messenger | 1233b98 |
+| Notification | dc8a482 |
+| Payment | 1a40cd4 |
+| Recommendation | dfed7e7 |
+| Search | 06c95ea |
+| SocialGraph | 00f9816 |
+| Upload | ecc94e3 |
+
+services.manifest.json là danh sách commit canonical sau vòng verify cuối:
+
+~~~powershell
+.\scripts\update-manifest.ps1
+~~~
+
+## 10. Lệnh kiểm tra lại
+
+~~~powershell
+# Toàn bộ test/build/lint/config
+.\scripts\test-all.ps1
+
+# Chạy đủ service và smoke
+.\scripts\start-local.ps1
+.\scripts\smoke-local.ps1
+.\scripts\stop-local.ps1
+
+# Kiểm tra role DB, không in password
+$dotnet = & .\scripts\resolve-dotnet.ps1
+& $dotnet run --project .\scripts\Fakebook.Maintenance -- verify-service-roles --env-file .\.env --json
+
+# Kiểm tra secret/encoding
+.\scripts\check-secrets.ps1
+.\scripts\check-encoding.ps1
+~~~
 
 ---
 
-## 1. Tóm tắt
-
-Kiểm thử bảo mật toàn hệ thống ghi nhận **16 lỗ hổng** đã được xác minh trên mã nguồn thật, trong đó
-**1 lỗ hổng cho phép phá hoại dữ liệu không thể phục hồi**. **Đã vá 10/16**, kèm **44 test hồi quy
-mới** (SocialGraph +22, Upload +7, Auth +8, Gateway +4, Frontend +3); 1 mục cần thao tác thủ công trên
-PostgreSQL server (mục 5.1) và 6 mục còn lại được xếp thứ tự ở mục 9.
-
-Song song, hai API duy nhất chặn frontend đã được bổ sung và **CI chạy test đã được bật cho cả 10
-repo** (mục 4b).
-
-Thế trận phòng thủ nền của hệ thống ở mức khá: **không tìm thấy SQL injection** ở bất kỳ service
-nào (Auth dùng Dapper tham số hoá, SocialGraph dùng EF LINQ, Recommendation không nối chuỗi SQL),
-**không có path traversal** (Upload có `IsSafeLeafFileName` + kiểm tra prefix thư mục gốc),
-**không có SSRF/RCE**, và **không có đường bypass xác thực từ Internet**. Gateway xoá sạch mọi
-header `X-User-Id`/`X-Gateway-Secret`/`X-Internal-*` do client gửi lên trước khi gán giá trị tin
-cậy, mọi cổng service chỉ bind `127.0.0.1`, và 15 secret nội bộ đều dài 32 byte và khác nhau.
-
-Điểm yếu tập trung ở ba nhóm: (1) tầng **đọc** của SocialGraph — quy tắc privacy và block được cài
-lại ở ba nơi khác nhau nên rò ở đường Story; (2) **sự tin cậy mù** giữa SocialGraph và Upload Server
-đối với chuỗi URL do client gửi; (3) **chống lạm dụng** — rate limit không phân biệt được người dùng.
-
----
-
-## 2. Phương pháp
-
-- Rà soát mã nguồn theo 10 hướng chuyên biệt (xác thực/phiên, gateway/biên tin cậy, uỷ quyền
-  SocialGraph, messenger, notification, payment, upload, recommendation, search, hạ tầng/bí mật/frontend).
-- Mỗi phát hiện đi qua một vòng **phản biện đối kháng** độc lập: người phản biện mở lại đúng
-  file/dòng, đọc cả các lớp middleware/filter/policy chạy trước đó, và mặc định bác bỏ nếu không tự
-  chứng minh được đường khai thác. 115 phát hiện thô ban đầu → 140 mục được xác minh (số tăng vì
-  vòng phản biện tự tìm thêm lỗi bị bỏ sót) → gộp còn 16 lỗ hổng.
-- Mọi tuyên bố bảo mật trong README đều được kiểm chứng lại trên mã nguồn. **11 tuyên bố sai lệch**
-  so với thực tế (chi tiết ở mục 6).
-
----
-
-## 3. Bảng tổng hợp
-
-| # | Lỗ hổng | Mức | Trạng thái |
-|---|---|---|---|
-| 1 | Bất kỳ người dùng nào cũng xoá vĩnh viễn được media của người khác | High | ✅ Đã vá |
-| 2 | Bypass lớp lọc refresh token của Gateway (3 biến thể) | Medium | ✅ Đã vá |
-| 3 | Reel riêng tư rò qua Story; đường Story bỏ qua block | Medium | ✅ Đã vá |
-| 4 | Rate limit "theo IP" thực chất là một bucket toàn cục | Medium | ✅ Đã vá |
-| 5 | Khoá tài khoản nạn nhân từ xa qua bộ đếm đăng nhập | Medium | ✅ Đã vá |
-| 6 | Liệt kê tài khoản qua `resendEmailVerification` / `login` | Medium | ✅ Đã vá |
-| 7 | Toàn hệ thống dùng chung 1 tài khoản PostgreSQL, mật khẩu 9 ký tự | Medium | ⚠️ Cần thao tác thủ công |
-| 8 | Thu hồi phiên không tức thì với stream SSE đang mở | Medium | ✅ Đã vá |
-| 9 | Block không áp dụng ở tag/mention, danh sách người dùng, bình luận | Medium | ⏳ Chưa vá |
-| 10 | Cookie refresh token gửi tới Upload Server ở mọi request `/media` | Low | ✅ Đã vá |
-| 11 | Khoá ký JWT dùng chung cho Auth/Gateway/Upload (HS256) | Low | ⏳ Chưa vá |
-| 12 | Nonce chống replay lưu trong RAM; `RequireSignature` mặc định false | Low | ⏳ Chưa vá |
-| 13 | Pool BCrypt 2 permit — flood đăng ký làm ngưng xác thực | Low | ⏳ Chưa vá |
-| 14 | `login` ghi identifier tuỳ ý, không giới hạn độ dài, vào audit log | Low | ✅ Đã vá |
-| 15 | Phiên không có thời hạn tuyệt đối | Low | ⏳ Chưa vá |
-| 16 | Edge nginx không đặt header bảo mật nào (clickjacking) | Low | ✅ Đã vá (trừ CSP) |
-
-**Đã vá 10/16.** Mục Medium còn lại duy nhất là #9; các mục Low được mô tả ở phần 9.
-
----
-
-## 4. Chi tiết các lỗ hổng đã vá
-
-### 4.1 — Xoá vĩnh viễn media của người khác `HIGH`
-
-**Vị trí:** `UploadSever/Upload-Server/UploadAssetStore.cs:85-101` ·
-`SocialGraphService/SocialGraph.Api/SubGraphQL/Mutation.cs:38-62` ·
-`SocialGraphService/SocialGraph.Api/Service/UserGraphService.cs:741-758`
-
-**Đường khai thác** (đã dựng lại và kiểm chứng từng mắt xích):
-
-1. Kẻ tấn công đọc URL avatar của nạn nhân qua query hồ sơ công khai.
-2. Gọi `changeUserAvatar(userId: <chính mình>, avatarUrl: <URL nạn nhân>)`. Resolver chỉ gọi
-   `trustedCaller.RequireUserId(userId)` — nghĩa là "bạn đang sửa hồ sơ của chính bạn" — và
-   **không hề kiểm tra chuỗi URL kia thuộc về ai**.
-3. Gọi `changeUserAvatar` lần thứ hai với URL bất kỳ khác. Lúc này `UserGraphService.cs:741` lấy
-   `previousUrl` = URL của nạn nhân, và dòng 754-758 gọi thẳng `DeleteMediaAsync(previousUrl)`.
-4. Upload Server nhận `POST /internal/media/delete`, chỉ xác thực caller là service nội bộ rồi gọi
-   `DeleteByUrlsAsync` — hàm này chuyển URL thành tên file rồi xoá, **không kiểm tra
-   `OwnerUserId`, không kiểm tra trạng thái pending/committed**. Đối chiếu: hàm
-   `DeletePendingOwnedAsync` ngay bên dưới (dòng 103-123) kiểm tra đủ cả hai.
-
-**Tác động:** file bị xoá khỏi đĩa vĩnh viễn, không có thùng rác, không có backup trong compose.
-Cùng đường này áp dụng cho `changeUserBackground`, ảnh bìa nhóm, và đính kèm tin nhắn Messenger.
-Một script chạy vài phút có thể xoá sạch avatar của toàn bộ người dùng.
-
-**Cách đã sửa** — vá cả hai phía:
-
-*Phía Upload Server* (commit `9cb4758`):
-- `FinalizeAsync` / `DeleteByUrlsAsync` nhận thêm `ownerUserId`. Khi có giá trị, chỉ thao tác trên
-  asset có `OwnerUserId` khớp, và **fail closed** khi không xác định được quyền sở hữu (thiếu
-  metadata, metadata hỏng, file legacy).
-- Thêm endpoint `POST /internal/media/authorize` (`{ownerUserId, urls}` → `{authorized, unauthorizedUrls}`)
-  để service nghiệp vụ kiểm tra trước khi lưu URL.
-- Đọc metadata không còn ném exception với tên file legacy/không phải GUID; trả về "không xác định
-  chủ sở hữu" thay vì crash.
-- Dọn dẹp dây chuyền (xoá user/nhóm/bài) vẫn hoạt động bằng cách bỏ trống `ownerUserId`, vì các URL
-  đó đến từ trạng thái đã lưu phía server chứ không phải request hiện tại.
-
-*Phía SocialGraph* (commit `cbd6484`):
-- Thêm `IMediaOwnershipGuard` / `UploadMediaOwnershipGuard`: hỏi Upload xem người thực hiện có sở hữu
-  từng URL client gửi lên không, và **fail closed** khi không lấy được câu trả lời (chưa cấu hình,
-  không kết nối được, response không thành công).
-- Áp dụng cho avatar/ảnh bìa người dùng, avatar/ảnh bìa nhóm, và mọi `MediaInput` khi tạo bài viết,
-  bài nhóm, bình luận, story, reel, cũng như khi cập nhật bài.
-- `FinalizeMediaAsync`/`DeleteMediaAsync` mang theo `ownerUserId` qua integration outbox.
-  `MediaLifecycleEvent.OwnerUserId` để optional nên các bản ghi outbox cũ vẫn deserialize được.
-- Lỗi trả về mã `FORBIDDEN` qua `MediaOwnershipErrorFilter`, không tiết lộ URL nào tồn tại.
-
-**Test:** `MediaOwnershipTests` ở cả hai repo — từ chối media của người khác, cho phép đúng chủ,
-dọn dẹp dây chuyền, fail-closed với file legacy, chặn finalize chéo, và endpoint authorize.
-
----
-
-### 4.2 — Bypass lớp lọc refresh token của Gateway `MEDIUM`
-
-**Vị trí:** `APIGateway/API-Gateway/fakebookGateway/Gateway/GraphQlCookieResponseMiddleware.cs:21-28, 124, 167-171`
-
-**Vấn đề:** middleware lọc refresh token khỏi response bằng cách **so khớp tên khoá JSON**. Có 3
-cách qua mặt:
-
-| Biến thể | Cách thực hiện | Vì sao lọt |
-|---|---|---|
-| (a) Alias | `mutation { refreshToken { rt: refreshToken } }` | Khoá trả về tên `rt`, không khớp chuỗi `refreshToken` |
-| (b) Selection set rút gọn | `login(...) { refreshTokenCookie { value } }` | Object chỉ có khoá `value` nên `LooksLikeCookieInstruction` (đòi đủ 4 khoá) sai → không null hoá |
-| (c) SSE | Gửi header `Accept: text/event-stream` | Dòng 21-28 thoát sớm trước khi buffer, `ProcessNode()` không bao giờ chạy |
-
-**Tác động:** một đoạn JS chạy trên origin (XSS hoặc script bên thứ ba) lấy được refresh token sống
-30 ngày, gia hạn vô hạn, sống sót qua việc đóng tab — vô hiệu hoá toàn bộ tác dụng của `HttpOnly`.
-Không khai thác được cross-site vì cookie là `SameSite=Lax` + `Secure`.
-
-**Cách đã sửa** (commit `c269496`): không vá ở tầng response mà **loại field khỏi schema công khai**.
-Đánh `@internal` cho `LoginPayload.refreshToken` và `GatewayCookieInstruction.value` trong
-`Gateway/schema/Authentication/schema-extensions.graphqls`, rồi recompose lại `gateway.far` và
-`gateway.local.far`. Cả 3 biến thể trở thành bất khả thi thay vì phải vá từng cái.
-
-> **Đã kiểm chứng an toàn trước khi đổi:** cookie refresh **không** được set từ body response mà
-> từ header nội bộ `X-Fakebook-Refresh-Cookie-Instruction` do Auth phát ra và
-> `FusionSubgraphHeaderHandler.cs:66-84` xử lý. Đường trong body chỉ là fallback. Frontend cũng chỉ
-> select `accessToken`, `refreshTokenExpiresAt`, `user`. Vì vậy luồng đăng nhập không bị ảnh hưởng.
-> Lớp lọc ở response được giữ lại làm phòng thủ chiều sâu.
-
-**Test:** `GatewaySchemaTests` khẳng định hai field đã biến mất khỏi schema công khai và các field
-hợp lệ vẫn còn.
-
----
-
-### 4.3 — Rò rỉ privacy và block ở đường Story `MEDIUM`
-
-**Vị trí:** `SocialGraphService/SocialGraph.Api/Service/ContentGraphService.cs` —
-`IsStoryShareSourceVisible` và `GetVisibleStoryAuthorIdsAsync`
-
-**Vấn đề 1 — Reel riêng tư bị lộ:** `IsStoryShareSourceVisible` trả về `true` **vô điều kiện** cho
-Reel, rồi mới kiểm tra `privacy == 0` cho FeedPost. Reel có đủ miền privacy 0..3 và sửa được bằng
-`updatePost`, nên một reel để "chỉ mình tôi" (privacy 3) hoặc "chỉ bạn bè" (privacy 2) khi được chia
-sẻ vào story sẽ hiện **nguyên nội dung, media và tác giả** cho bất kỳ ai xem được story đó.
-
-**Vấn đề 2 — Block không được áp dụng:** `GetVisibleStoryAuthorIdsAsync` trả về đơn thuần
-`friends ∪ followed`, **không lọc block**. Người đã chặn bạn vẫn xuất hiện trong khay story của bạn
-và ngược lại.
-
-**Cách đã sửa** (commit `65b0667`, điều chỉnh ở `0860f13`):
-- `IsStoryShareSourceVisible` áp dụng cùng một kiểm tra `privacy == 0` cho **cả** FeedPost lẫn Reel,
-  đúng với hợp đồng "chỉ bài công khai và reel công khai mới chia sẻ được".
-- `GetVisibleStoryAuthorIdsAsync` loại bỏ block theo **cả hai chiều** (`Blocked` và `BlockedBy`).
-
-**Quyết định sản phẩm:** người **theo dõi** được xem story bất kể privacy hồ sơ của tác giả — privacy
-hồ sơ điều phối hồ sơ, không điều phối khay story. Quy tắc cũ trong
-`SocialReadModelService.CanViewTargetCoreAsync` (`isFriend || privacy == 1 && followed`, chỉ áp dụng
-cho Story) đã được sửa theo cùng hướng, nên khay story và đường deep-link/`storyViewers` **luôn nhất
-quán**: thấy trong khay thì mở ra được. Block vẫn là thứ duy nhất phủ quyết mọi quan hệ.
-
-**Test:** `StoryVisibilityTests` — 11 test phủ mọi mức privacy của reel, cả hai chiều block, và từng
-mức privacy của tác giả.
-
----
-
-### 4.4 — Rate limit "theo IP" là một bucket toàn cục `MEDIUM`
-
-**Vị trí:** `docker-compose.yml` — config `edge-nginx`
-
-**Vấn đề:** edge nginx khoá theo `$binary_remote_addr` nhưng **không có `set_real_ip_from` /
-`real_ip_header`**. Traffic đi qua Tailscale Serve rồi qua Docker port publisher, nên `$remote_addr`
-luôn là một địa chỉ cố định (docker-proxy). Hệ quả: giới hạn 8r/s burst 40 là **dùng chung cho tất
-cả mọi người** — khoảng 9 req/s từ một máy bất kỳ trong tailnet, không cần xác thực, làm đăng
-nhập/đăng ký/mọi query công khai của **tất cả** người dùng trả 429.
-
-Nặng hơn: `limit_conn fakebook_connections_per_ip 20` cũng thành toàn cục, trong khi `/graphql` giữ
-subscription SSE với `proxy_read_timeout 3600s`. Khoảng **10 người dùng đồng thời** (mỗi người vài
-stream SSE) là hết sạch 20 kết nối và cả hệ thống chết — **không cần kẻ tấn công nào**.
-
-**Cách đã sửa:**
-- Thêm `set_real_ip_from` cho loopback + các dải mạng Docker (`172.16.0.0/12`, `192.168.0.0/16`,
-  `10.0.0.0/8`), `real_ip_header X-Forwarded-For`, `real_ip_recursive on`. **Cố ý không tin dải
-  tailnet** để client không thể đẩy một entry `X-Forwarded-For` giả thành `$remote_addr`.
-- Tách zone `limit_conn` riêng: `fakebook_graphql_conn_per_ip` (64, đủ cho nhiều tab × nhiều stream
-  SSE) và `fakebook_upload_conn_per_ip` (16). Trước đây hai loại dùng chung một zone.
-- Bổ sung header bảo mật (mục 4.5).
-
-**Kiểm chứng:** `docker-compose config -q` hợp lệ. Máy này **không có Docker daemon** nên
-**chưa chạy được `nginx -t`** — cần xác nhận lại khi deploy.
-
----
-
-### 4.5 — Thiếu header bảo mật ở edge `LOW`
-
-Toàn bộ server block của edge không có một `add_header` nào, cho phép clickjacking: trang của kẻ
-tấn công nhúng iframe origin tailnet, phủ overlay trong suốt để lừa nạn nhân đang đăng nhập bấm các
-hành động 1-click (xoá bài, rời nhóm).
-
-**Cách đã sửa:** thêm `X-Frame-Options DENY`, `X-Content-Type-Options nosniff`,
-`Referrer-Policy strict-origin-when-cross-origin`.
-
-> **Chưa thêm CSP** một cách có chủ đích. `Content-Security-Policy default-src 'self'` có thể làm vỡ
-> SPA (Vite dùng inline style/script), và giao diện đang được chỉnh sửa song song. CSP nên được thêm
-> sau, kèm kiểm thử frontend thực tế. HSTS không cần vì TLS kết thúc ở Tailscale Serve.
-
----
-
-### 4.6 — Cookie refresh token gửi tới Upload Server `LOW`
-
-**Vị trí:** `AuthenticationService/.../Configuration/Configuration.cs:36`
-
-**Vấn đề:** `RefreshTokenCookiePath = "/"`, trong khi edge phục vụ `/graphql`, `/api/` và `/media/`
-trên **cùng một origin**. Trình duyệt vì thế gửi kèm chứng chỉ 30 ngày `fb_refresh` vào **mọi
-request tải media** — hàng trăm request mỗi lần mở trang, kể cả thẻ `<img>`. Đích đến là Upload
-Server: thành phần xử lý file do người dùng tải lên, tức bề mặt tấn công lớn nhất hệ thống. Bất kỳ
-log truy cập nào ghi header, hay bất kỳ lỗ đọc request nào trong Upload, đều lấy được refresh token.
-
-**Cách đã sửa** (commit `e0f7505` + `0bf6bc1`): đổi mặc định thành `/graphql` ở cả Auth và Gateway,
-cùng `appsettings.example.json` và `appsettings.Development.json`. Đã kiểm chứng cookie chỉ được đọc
-tại `FusionSubgraphHeaderHandler` cho request `/graphql`, và Gateway không map route nào khác.
-`HttpOnly`, `Secure`, `SameSite=Lax` giữ nguyên.
-
-> **Lưu ý triển khai:** trình duyệt vẫn đang giữ cookie cũ ở path `/`. Sau khi đổi, thao tác logout
-> sẽ xoá cookie ở `/graphql`, còn bản sao `/` cũ nằm lại phía client tới khi hết hạn. Nó vô hại vì
-> logout đã thu hồi phiên phía server, nhưng **nên bắt đăng xuất toàn bộ phiên một lần sau khi
-> triển khai**.
-
----
-
-### 4.7 — Khoá tài khoản nạn nhân từ xa `MEDIUM`
-
-**Vị trí:** `AuthenticationService/.../Repositories/Repositories.cs:1174-1196` ·
-`APIGateway/.../Gateway/FusionSubgraphHeaderHandler.cs`
-
-**Vấn đề:** Auth lấy IP từ `HttpContext.Connection.RemoteIpAddress` nhưng không gọi
-`UseForwardedHeaders`, và Gateway **không** forward `X-Forwarded-For` xuống subgraph. Nên IP mà Auth
-thấy **luôn là IP container gateway**. Điều kiện `ip_address = CAST(@IpAddress AS inet)` trong
-`CountRecentLoginFailuresAsync` vì thế luôn đúng, khiến bộ đếm rate limit thực chất **chỉ phân vùng
-theo email**.
-
-Kẻ tấn công gọi `login('victim@x.com', 'sai')` 5 lần là nạn nhân nhận `LOGIN_RATE_LIMITED` **kể cả
-khi gõ đúng mật khẩu**. Cửa sổ chỉ reset khi có `LOGIN_SUCCESS`, mà nạn nhân thì không thể thành
-công — nên không tự phục hồi. Lặp 5 request mỗi 15 phút = khoá vĩnh viễn.
-
-Cùng gốc nguyên nhân còn làm `mySessions` hiển thị IP container `172.x` và `deviceName`/`os`/
-`browser` đều null cho **mọi** phiên (User-Agent cũng không được forward) — tính năng "Nơi bạn đã
-đăng nhập" vô dụng, nạn nhân bị chiếm tài khoản không thể nhận ra phiên lạ.
-
-**Cách đã sửa** (commit `2022c91` + `75aaedf`):
-- Gateway phát **một** entry `X-Forwarded-For` duy nhất lấy từ địa chỉ chính nó đã phân giải, cùng
-  `User-Agent` của trình duyệt. Cả hai header do client gửi lên đều bị xoá trước, nên không giả mạo được.
-- Auth bật `UseForwardedHeaders` với `ForwardLimit = 1`, chỉ tin loopback và các dải mạng riêng —
-  **cố ý không tin dải tailnet**.
-
-Bộ đếm giờ phân vùng theo (identifier, IP thật): kẻ tấn công ở IP A không khoá được nạn nhân ở IP B.
-
-### 4.8 — Liệt kê tài khoản `MEDIUM`
-
-**Vị trí:** `AuthenticationService/.../Services/AuthService.cs`
-
-Ba endpoint không cần xác thực đều cho biết một địa chỉ có tồn tại hay không:
-
-| Endpoint | Rò rỉ thế nào |
-|---|---|
-| `login` | Kiểm tra **trạng thái tài khoản trước khi verify mật khẩu**, nên một request với mật khẩu bất kỳ đã phân biệt được "đã đăng ký nhưng chưa xác minh" / "bị khoá" với "không tồn tại" |
-| `resendEmailVerification` | Trả về `ACCOUNT_NOT_FOUND`, "Email is already verified" và `ACCOUNT_UNAVAILABLE` — ba kết quả phân biệt được |
-| `requestPasswordReset` | Thông điệp đã chung chung, nhưng lỗi `OTP_COOLDOWN` / `OTP_RESEND_RATE_LIMITED` vẫn thoát ra, mà throttling chỉ kích hoạt cho tài khoản thật |
-
-Ngoài ra lời gọi SMTP của `requestPasswordReset` nằm **ngoài** `try/catch`, nên mail server hỏng sẽ
-trả lỗi máy chủ về client — và vì chỉ gửi mail cho tài khoản thật, chính lỗi đó xác nhận địa chỉ tồn tại.
-
-**Cách đã sửa** (commit `9998529`):
-- `login`: chuyển kiểm tra trạng thái xuống **sau** khi verify mật khẩu. Người dùng thật vẫn nhận
-  `EMAIL_UNVERIFIED` nên **màn hình nhập OTP của SPA hoạt động y như cũ** (`LoginPage.tsx:31`).
-- `resendEmailVerification`: một phản hồi duy nhất cho mọi trường hợp.
-- `requestPasswordReset`: gộp lỗi throttling vào cùng phản hồi chung.
-- Cả hai luồng OTP: gửi mail bọc trong guard, thất bại chỉ ghi log.
-
-### 4.9 — Identifier không giới hạn ghi vào audit log `LOW`
-
-**Vị trí:** `AuthenticationService/.../Services/AuthService.cs` — `LoginAsync`
-
-`LoginAsync` chỉ chuẩn hoá và kiểm `IsNullOrWhiteSpace`, **không validate định dạng hay độ dài**.
-Mỗi lần thất bại ghi một dòng jsonb chứa nguyên chuỗi đó vào `auth.id_audit_log`, trên DB **dùng
-chung cho toàn hệ thống**, và không có chính sách retention nào. Kẻ tấn công ẩn danh làm phình DB
-vĩnh viễn; với identifier lớn hơn ~2704 byte còn làm vỡ index btree khiến exception thoát ra thành
-lỗi máy chủ.
-
-**Cách đã sửa** (commit `9998529`): validate định dạng email và cắt ở 254 ký tự (RFC 5321) ngay đầu
-`LoginAsync`, **trước mọi truy cập DB**. Chuỗi có khoảng trắng bị từ chối tường minh vì
-`EmailAddressAttribute` của .NET chấp nhận chúng.
-
----
-
-## 4b. Hoàn thiện API và CI
-
-**Hai API chặn frontend đã được bổ sung** (commit `ddc5dbf` + `9e67ee3`):
-
-1. **Deep-link thông báo trên bình luận.** Thông báo LIKE/MENTION mang `objectId` = id của **bình
-   luận**, nhưng `postDetail` lọc `otype` về FeedPost/GroupPost/Reel nên trả null → màn hình
-   "Content unavailable". `GetPostDetailAsync` giờ tự giải bình luận lên bài viết chứa nó (đi ngược
-   chuỗi trả lời, giới hạn độ sâu 20 như các kiểm tra visibility). **Frontend không cần đổi gì.**
-2. **`updateComment`** — mutation sửa bình luận, dùng chung `RequireContentAuthorAsync` với
-   `updatePost`, xử lý nội dung, đồng bộ lại mention và thay media (tri-state: giữ / thay / xoá),
-   chịu cùng kiểm tra quyền sở hữu media như mọi URL client gửi lên.
-
-SDL của SocialGraph đã export lại và **cả hai Fusion archive đã recompose**.
-
-**CI đã bật cho cả 10 repo** (commit `e7b9afa`, `69c4ae2`, `c09dd72`, `fd7676f`, `e3c9894`,
-`3ff3050`, `f1753ec`, `1ada88f`, `b2ba13e`, `48ae626`): chạy test trên push và pull request. Với 2
-repo có publish Docker image, job build/push giờ **phụ thuộc vào job test** — trước đây image vẫn
-được push kể cả khi test đỏ.
-
-Phát hiện kèm theo: `NotificationService.Tests` **không nằm trong** `NotificationService.sln`, nên
-`dotnet test` ở mức solution im lặng không chạy 24 test đó. Đã thêm vào solution (commit `fd7676f`).
-
----
-
-## 5. Việc cần làm thủ công
-
-### 5.1 — Đổi mật khẩu PostgreSQL `MEDIUM` (chưa làm)
-
-`DB_PASSWORD` trong `.env` hiện dài **9 ký tự** — quá yếu cho một cổng Postgres mở trên tailnet.
-Tệ hơn, anchor `*postgres-base` trong `docker-compose.yml:7-12` định nghĩa **duy nhất một** cặp
-`DB_USER`/`DB_PASSWORD` và mọi service chỉ đổi `Search Path`. `Search Path` **không phải ranh giới
-bảo mật**: bất kỳ ai vào được tailnet hoặc chiếm được **bất kỳ container nào** (đọc
-`/proc/self/environ` là ra ngay) đều `SELECT` thẳng được `auth.id_credential`, `auth.id_verification`,
-`auth.id_session` của toàn hệ thống.
-
-**Chưa tự động thực hiện** vì việc này đòi hỏi đổi đồng thời trên PostgreSQL server bên ngoài (ngoài
-phạm vi repo), và README ghi rõ các giá trị `.env` đã cấp không được tự ý sửa. Cần thực hiện thủ công:
-
-1. Đổi `DB_PASSWORD` sang chuỗi ngẫu nhiên 32 byte, đồng bộ trên server PostgreSQL và `.env`.
-2. Tạo role PostgreSQL riêng cho từng service + `REVOKE ALL ON SCHEMA <schema> FROM PUBLIC`, mỗi
-   service chỉ `GRANT` trên schema của mình. Đây là thay đổi phòng thủ chiều sâu có giá trị lớn nhất
-   của cả hệ thống.
-3. Bỏ việc nhúng cặp credential dùng chung vào mọi container qua anchor.
-
-### 5.2 — Đăng xuất toàn bộ phiên sau khi triển khai
-
-Xem lưu ý ở mục 4.6.
-
-### 5.3 — Chạy `nginx -t` và smoke test khi deploy
-
-Máy phát triển không có Docker daemon nên chưa kiểm chứng được cú pháp nginx lúc chạy thật, và chưa
-chạy được smoke test đăng nhập đầu-cuối. Cần xác nhận khi triển khai:
-- `nginx -t` trong container edge.
-- Đăng nhập → cookie `fb_refresh` được set với `Path=/graphql` → `refreshToken` mutation hoạt động.
-- Đổi avatar bằng ảnh của chính mình vẫn thành công; đổi bằng URL ảnh người khác trả `FORBIDDEN`.
-
----
-
-## 6. Các tuyên bố trong README không đúng với mã nguồn
-
-Kiểm chứng phát hiện **11 tuyên bố sai lệch**. Đáng chú ý nhất:
-
-1. *"Ngoại lệ Payment→Auth gọi GraphQL `me { userId }` để validate session"* — **sai**. Chỉ Upload
-   làm vậy (`Upload-Server/Program.cs:198`). Payment gọi `paymentPremiumState(userId)` và xác thực
-   bằng `X-Payment-Secret`; danh tính người dùng lấy từ header `X-User-Id` do gateway gán.
-2. *"Các thao tác theo viewer yêu cầu `X-Internal-SocialGraphService-Secret`; `X-Gateway-Secret` chỉ
-   là alias tương thích"* — **ngược lại hoàn toàn**: `TrustedCallerAccessor.cs:32` **chỉ** chấp nhận
-   `X-Gateway-Secret`.
-3. *"Block luôn thắng"* — không áp dụng ở tag/mention, mọi danh sách người dùng
-   (`likedUsers`/`taggedUsers`/`mentionedUsers`/`groupMembers`/`groupAdmins`/`storyViewers`), bình
-   luận, và share source trong story. **Phần story đã vá**, phần còn lại chưa (mục #9).
-4. *"Service→Service HMAC chống replay bằng nonce dùng 1 lần"* — nonce chỉ nằm trong RAM tiến trình
-   (`InternalRequestSigning.cs:152`), mất sau restart và không chia sẻ giữa replica;
-   `RequireSignature` mặc định `false`.
-5. *"Gateway rate-limit `/graphql` theo IP"* — có đăng ký policy nhưng mọi client chia chung một
-   bucket (mục 4.4). **Phần edge đã vá**; phân vùng phía Gateway (`ForwardLimit=1`) vẫn cần xem lại.
-6. `README.md:238` ghi `~68 query, ~78 mutation` — số thật là **70 query / 81 mutation /
-   4 subscription** công khai.
-
----
-
-## 7. Kiểm chứng
-
-Toàn bộ test chạy sau khi vá:
-
-| Repo | Kết quả |
-|---|---|
-| SocialGraphService | **194/194 pass** (175 gốc + 11 story + 8 comment API) |
-| Upload Server | **19/19 pass** (12 gốc + 7 ownership) |
-| API Gateway | **32/32 pass** (kèm assertion schema + forwarded header) |
-| Authentication | **23/23 pass** (kèm cookie scope + identifier hardening) |
-| MessengerService | **61/61 pass** |
-| NotificationService | **24/24 pass** (trước đây bị solution bỏ sót) |
-| PaymentService | **35/35 pass** (trừ 4 class Testcontainers cần Docker — sẽ chạy trên CI) |
-| SearchService | **34/34 pass** |
-| RecommendationService | **52/52 pass** (pytest) |
-| Frontend | **287/287 pass** (46 file, vitest) + `npm run build` sạch |
-| `docker-compose config -q` | hợp lệ |
-
-Build sạch (0 error) trên cả 8 project .NET.
-
-Lưu ý lint frontend: `ProfilePage.tsx` có **2 lỗi ESLint sẵn có** —
-`react-hooks/rules-of-hooks` báo `useAsProfileImage` gọi trong callback. Đây là **báo nhầm**: hàm đó
-là `async function` xử lý sự kiện thường (dòng 842), rule chỉ kích hoạt vì tên bắt đầu bằng `use`.
-Đổi tên hàm (ví dụ `applyAsProfileImage`) là hết cả hai. CI vẫn chạy lint nhưng chưa chặn build; nên
-bật chặn sau khi đổi tên.
-
----
-
-## 8. Lịch sử commit
-
-Mỗi repo có một commit **baseline** ghi lại phần công việc ký HMAC nội bộ + hardening đã hoàn thành
-nhưng chưa commit từ trước, để các bản vá bảo mật nằm tách bạch ở commit riêng.
-
-| Repo | Baseline | Bản vá bảo mật | Khác |
-|---|---|---|---|
-| Upload Server | `ea53ec7` | `9cb4758` owner-scoped media, `3044467` gitignore | `69c4ae2` CI |
-| SocialGraph | `77921c7` | `cbd6484` media ownership, `65b0667` story privacy/block, `0860f13` điều chỉnh story | `ddc5dbf` comment API, `e7b9afa` CI |
-| API Gateway | `9565eec` | `c269496` @internal refresh token, `0bf6bc1` cookie path, `2022c91` forwarded headers | `9e67ee3` publish updateComment, `b2ba13e` CI |
-| Authentication | `8c55807` | `e0f7505` cookie path, `75aaedf` forwarded headers, `9998529` enumeration + identifier | `48ae626` CI |
-| Messenger | `fb6e83f` | — | `c09dd72` CI |
-| Notification | `c5eb31d` | — | `fd7676f` CI + thêm test project vào solution |
-| Payment | `e422463` | — | `e3c9894` CI |
-| Search | `56c5cb8` | — | `3ff3050` CI |
-| Recommendation | `5c06094` | — | `f1753ec` CI |
-| Frontend | — | `ad1af47` bão reconnect SSE | `1ada88f` CI |
-| **Workspace** *(mới)* | — | — | `c8e8fdd` khởi tạo repo, `582ce91` secure.md |
-
-Bổ sung sau đó: `16bdd46` (Gateway — watchdog phiên cho SSE), `b71249c` (SocialGraph — ghim EF Core),
-`e2a5d41` (Recommendation — ghim Python), `ec39c11` (Notification — bỏ track `obj/`).
-
-Toàn bộ đã push lên `origin/main` của từng repo. **Cả 11 repo hiện sạch, không còn thay đổi chưa
-commit.**
-
-### Repo workspace
-
-`D:\Fakebook` trước đây chỉ có thư mục `.git` **rỗng** nên root không phải git repo hợp lệ và mọi
-lệnh git tại đó đều fail — `docker-compose.yml` (492 dòng), toàn bộ `scripts/`, `docs/`, `README.md`,
-`.env.example` và chính file này đều nằm ngoài version control. Mất máy là mất toàn bộ tầng điều phối
-trong khi 10 service vẫn an toàn trong repo riêng.
-
-Đã tạo repo **private** `github.com/fakebook-works/fakebook-workspace` chứa 31 file đó. Thư mục 10
-service được ignore để hai lịch sử không trộn vào nhau, cùng với `.env`, `.run/`, `.tools/`, seed
-receipt và build output. `scripts/check-secrets.ps1` xác nhận **không có secret nào lọt vào file
-được track**.
-
-Kèm theo `services.manifest.json` + `scripts/update-manifest.ps1` ghi remote/branch/commit của cả 10
-service — đây là thứ cho phép ghép một bản `docker-compose.yml` với đúng các build đã được kiểm
-chứng cùng nó. Script cảnh báo khi service còn thay đổi chưa commit, vì khi đó commit id ghi lại
-không mô tả đúng thứ đang chạy.
-
-> Repo để **private** có chủ đích: file này mô tả chi tiết các lỗ hổng **chưa vá** kèm `file:line`.
-> Nếu sau này muốn chuyển sang public, phải tách `secure.md` ra khỏi repo trước.
-
----
-
-## 9. Các lỗ hổng còn lại và thứ tự đề xuất
-
-**Ưu tiên tiếp theo (Medium):**
-
-- **#8 Thu hồi phiên với SSE** — "Đăng xuất tất cả thiết bị" không cắt được subscription đang mở:
-  `GraphQlCookieResponseMiddleware` cho request `text/event-stream` đi thẳng qua, edge giữ kết nối
-  `proxy_read_timeout 3600s`, và subgraph Messaging/Notification chỉ nhận `X-User-Id` một lần lúc
-  thiết lập. *Sửa:* kiểm tra lại phiên định kỳ 30-60s cho stream đang mở và huỷ
-  `CancellationTokenSource`, hoặc đẩy sự kiện invalidate xuống Gateway khi Auth thu hồi phiên.
-- **#9 Block ở các đường đọc còn lại** — `GetAssociatedUsersAsync` (dùng chung cho `likedUsers`/
-  `taggedUsers`/`mentionedUsers`/`groupMembers`/`groupAdmins`/`storyViewers`), tag/mention lúc tạo
-  nội dung (vẫn gửi thông báo tới người đã chặn mình), và `GetCommentsAsync`.
-
-**Gốc rễ cần xử lý:** quy tắc privacy 0/1/2/3 + block đang được **cài lại 3 lần ở 3 nơi**. Chính sự
-nhân bản này sinh ra lỗ #3 và #9. Nên gom thành một "visibility kernel" duy nhất dạng
-`CanView(viewerId, objectId[])` và cho mọi đường đọc gọi vào đó.
-
-**Ưu tiên thấp:** #11 (JWT HS256 dùng chung khoá → chuyển RS256/EdDSA), #12 (nonce sang Redis,
-`RequireSignature` mặc định true), #13 (tách hàng đợi BCrypt register/login), #15 (thêm
-`absolute_expires_at` cho phiên). Còn lại từ mục #14: **retention cho `auth.id_audit_log`** — phần
-validate độ dài đã xong, nhưng bảng vẫn chỉ INSERT và không bao giờ được dọn.
-
-**Ngoài bảo mật, các mục ưu tiên cao từ báo cáo audit chưa làm:** 3 lệnh index của SocialGraph
-(`associations` thiếu index chứa cột `time`, `idx_associations` trùng khít PRIMARY KEY, `objects`
-thiếu index trên `otype`), migration baseline cho `objects`/`associations` (DDL hiện chỉ nằm trong
-markdown), retention cho bảng `notification`, và đưa tầng điều phối vào git.
+**Verdict:** phase 3 đã hoàn tất về code, migration, cấu hình và kiểm chứng. Backend đủ ổn
+để chuyển trọng tâm sang frontend, với các ngoại lệ vận hành ở mục 8 được theo dõi riêng.

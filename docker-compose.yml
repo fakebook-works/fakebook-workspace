@@ -4,16 +4,29 @@ x-dotnet-runtime: &dotnet-runtime
   ASPNETCORE_ENVIRONMENT: Production
   DOTNET_EnableDiagnostics: "0"
 
+x-observability: &observability
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+  OTEL_TRACES_SAMPLER_ARG: ${OTEL_TRACE_SAMPLE_RATIO:-0.1}
+
 x-postgres-base: &postgres-base
   DB_HOST: ${DB_HOST:?Set DB_HOST in .env}
   DB_PORT: ${DB_PORT:?Set DB_PORT in .env}
   DB_NAME: ${DB_NAME:?Set DB_NAME in .env}
-  DB_USER: ${DB_USER:?Set DB_USER in .env}
-  DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
 
 services:
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.157.0@sha256:f2f01157055a9b2aab9df7118e1f1c9abf345e99b23bc7a2bc791db374a7d0f6
+    restart: unless-stopped
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro
+    ports:
+      - "127.0.0.1:9464:9464"
+      - "127.0.0.1:13133:13133"
+    networks: [fakebook]
+
   redis:
-    image: redis/redis-stack-server:latest
+    image: redis/redis-stack-server:7.4.0-v8@sha256:798ab84d9f266936b034ab11c4d04a2b8e4b441884c5aa7d17ac951eefdf742a
     restart: unless-stopped
     environment:
       REDIS_ARGS: --appendonly yes
@@ -39,12 +52,15 @@ services:
       retries: 5
       start_period: 45s
     environment:
-      <<: [*dotnet-runtime, *postgres-base]
+      <<: [*dotnet-runtime, *postgres-base, *observability]
       ASPNETCORE_URLS: http://+:1001
-      ConnectionStrings__DefaultConnection: Host=${DB_HOST};Port=${DB_PORT};Database=${DB_NAME};Username=${DB_USER};Password=${DB_PASSWORD};Search Path=auth;Timeout=10;Command Timeout=30
+      ConnectionStrings__DefaultConnection: Host=${DB_HOST};Port=${DB_PORT};Database=${DB_NAME};Username=${AUTH_DB_USER:?Set AUTH_DB_USER in .env};Password=${AUTH_DB_PASSWORD:?Set AUTH_DB_PASSWORD in .env};Search Path=auth;Timeout=10;Command Timeout=30
+      ConnectionStrings__SecurityRedis: redis:6379
       Jwt__Issuer: fakebook-auth
       Jwt__Audience: fakebook
-      Jwt__SigningKey: ${JWT_SIGNING_KEY:?Set JWT_SIGNING_KEY in .env (minimum 32 bytes)}
+      Jwt__PrivateKeyBase64: ${JWT_PRIVATE_KEY_BASE64:?Generate JWT_PRIVATE_KEY_BASE64 with scripts/initialize-secrets.ps1}
+      Jwt__KeyId: ${JWT_KEY_ID:?Set JWT_KEY_ID in .env}
+      Jwt__LegacySigningKey: ${JWT_LEGACY_SIGNING_KEY:-}
       Jwt__AccessTokenMinutes: ${JWT_ACCESS_TOKEN_MINUTES:-15}
       Gateway__InternalSharedSecret: ${AUTH_GATEWAY_SECRET:?Set a dedicated AUTH_GATEWAY_SECRET in .env}
       Gateway__AuthenticationServiceSharedSecret: ${AUTHENTICATION_INTERNAL_SECRET:?Set AUTHENTICATION_INTERNAL_SECRET in .env}
@@ -53,6 +69,7 @@ services:
       Payment__InternalSharedSecret: ${PAYMENT_AUTH_SECRET:?Set PAYMENT_AUTH_SECRET in .env (minimum 32 bytes)}
       Auth__RefreshTokenCookieSecure: "true"
       Auth__RefreshTokenCookieSameSite: Lax
+      Auth__AbsoluteSessionDays: ${AUTH_ABSOLUTE_SESSION_DAYS:-90}
       Auth__PasswordHashWorkFactor: ${AUTH_BCRYPT_WORK_FACTOR:-11}
       Auth__PasswordHashMaxConcurrency: ${AUTH_BCRYPT_MAX_CONCURRENCY:-2}
       Auth__PasswordHashQueueLimit: ${AUTH_BCRYPT_QUEUE_LIMIT:-16}
@@ -66,6 +83,9 @@ services:
       Smtp__FromEmail: ${SMTP_FROM_EMAIL:-no-reply@example.com}
       Smtp__FromName: ${SMTP_FROM_NAME:-Fakebook}
       Snowflake__WorkerId: 1
+    depends_on:
+      redis:
+        condition: service_healthy
     ports:
       - "127.0.0.1:1001:1001"
     networks: [fakebook]
@@ -74,13 +94,13 @@ services:
     build:
       context: ./SocialGraphService
       dockerfile_inline: |
-        FROM mcr.microsoft.com/dotnet/sdk:8.0.422 AS build
+        FROM mcr.microsoft.com/dotnet/sdk:10.0.302 AS build
         WORKDIR /src
         COPY SocialGraph.Api/SocialGraph.Api.csproj SocialGraph.Api/
         RUN dotnet restore SocialGraph.Api/SocialGraph.Api.csproj
         COPY . .
         RUN dotnet publish SocialGraph.Api/SocialGraph.Api.csproj -c Release -o /app/publish --no-restore /p:UseAppHost=false
-        FROM mcr.microsoft.com/dotnet/aspnet:8.0
+        FROM mcr.microsoft.com/dotnet/aspnet:10.0
         # The Debian runtime image ships no HTTP client, so the container has no way to
         # answer its own health probe without one.
         RUN apt-get update && apt-get install -y --no-install-recommends curl \
@@ -98,13 +118,15 @@ services:
       retries: 5
       start_period: 45s
     environment:
-      <<: [*dotnet-runtime, *postgres-base]
+      <<: [*dotnet-runtime, *postgres-base, *observability]
       ASPNETCORE_URLS: http://+:1002
-      ConnectionStrings__PostgreSQL: Host=${DB_HOST};Port=${DB_PORT};Database=${DB_NAME};Username=${DB_USER};Password=${DB_PASSWORD};Search Path=social_graph;Timeout=10;Command Timeout=30
+      ConnectionStrings__PostgreSQL: Host=${DB_HOST};Port=${DB_PORT};Database=${DB_NAME};Username=${SOCIALGRAPH_DB_USER:?Set SOCIALGRAPH_DB_USER in .env};Password=${SOCIALGRAPH_DB_PASSWORD:?Set SOCIALGRAPH_DB_PASSWORD in .env};Search Path=social_graph;Timeout=10;Command Timeout=30
       ConnectionStrings__Redis: redis:6379
+      ConnectionStrings__SecurityRedis: redis:6379
       Gateway__InternalSharedSecret: ${SOCIALGRAPH_GATEWAY_SECRET:?Set a dedicated SOCIALGRAPH_GATEWAY_SECRET in .env}
       InternalServices__SocialGraph__SharedSecret: ${SOCIALGRAPH_INTERNAL_SECRET:?Set SOCIALGRAPH_INTERNAL_SECRET in .env}
       IntegrationOutbox__PayloadEncryptionKey: ${SOCIALGRAPH_OUTBOX_ENCRYPTION_KEY:?Set SOCIALGRAPH_OUTBOX_ENCRYPTION_KEY in .env}
+      IntegrationOutbox__EnsureSchemaOnStartup: "false"
       IntegrationOutbox__PollMilliseconds: ${IntegrationOutbox__PollMilliseconds:-500}
       IntegrationOutbox__MaxIdlePollMilliseconds: ${IntegrationOutbox__MaxIdlePollMilliseconds:-2000}
       InternalServices__Authentication__BaseUrl: http://authentication:1001
@@ -162,14 +184,14 @@ services:
     init: true
     healthcheck:
       # python:slim has no curl either, but the interpreter is right there.
-      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:1003/health', timeout=5).status == 200 else 1)"]
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:1003/health/ready', timeout=5).status == 200 else 1)"]
       interval: 15s
       timeout: 10s
       retries: 5
       start_period: 120s
     environment:
-      <<: *postgres-base
-      DATABASE_URL: postgresql://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}?options=-csearch_path%3Drecommendation%2Cpublic
+      <<: [*postgres-base, *observability]
+      DATABASE_URL: postgresql://${RECOMMENDATION_DB_USER:?Set RECOMMENDATION_DB_USER in .env}:${RECOMMENDATION_DB_PASSWORD:?Set RECOMMENDATION_DB_PASSWORD in .env}@${DB_HOST}:${DB_PORT}/${DB_NAME}?options=-csearch_path%3Drecommendation%2Cpublic
       INTERNAL_SHARED_SECRET: ${RECOMMENDATION_GATEWAY_SECRET:?Set a dedicated RECOMMENDATION_GATEWAY_SECRET in .env}
       RECOMMENDATION_INTERNAL_SECRET: ${RECOMMENDATION_INTERNAL_SECRET:?Set RECOMMENDATION_INTERNAL_SECRET in .env}
       SOCIAL_GRAPH_SERVICE_SECRET: ${SOCIALGRAPH_INTERNAL_SECRET:?Set SOCIALGRAPH_INTERNAL_SECRET in .env}
@@ -183,6 +205,10 @@ services:
       SOCIAL_GRAPH_BASE_URL: http://social-graph:1002
       INTERNAL_AUTH_REQUIRE_SIGNATURE: "true"
       INTERNAL_AUTH_SEND_LEGACY_SECRET: "false"
+      SECURITY_REDIS_URL: redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
     ports:
       - "127.0.0.1:1003:1003"
     networks: [fakebook]
@@ -200,9 +226,11 @@ services:
       retries: 5
       start_period: 45s
     environment:
-      <<: [*dotnet-runtime, *postgres-base]
+      <<: [*dotnet-runtime, *postgres-base, *observability]
       ASPNETCORE_URLS: http://+:1004
-      ConnectionStrings__DefaultConnection: Host=${DB_HOST};Port=${DB_PORT};Database=${DB_NAME};Username=${DB_USER};Password=${DB_PASSWORD};Search Path=search;Timeout=10;Command Timeout=30
+      ConnectionStrings__DefaultConnection: Host=${DB_HOST};Port=${DB_PORT};Database=${DB_NAME};Username=${SEARCH_DB_USER:?Set SEARCH_DB_USER in .env};Password=${SEARCH_DB_PASSWORD:?Set SEARCH_DB_PASSWORD in .env};Search Path=search;Timeout=10;Command Timeout=30
+      ConnectionStrings__SecurityRedis: redis:6379
+      Database__ApplySchemaOnStartup: "false"
       InternalSearchService__Secret: ${SEARCH_INTERNAL_SECRET:?Set SEARCH_INTERNAL_SECRET in .env}
       Gateway__InternalSharedSecret: ${SEARCH_GATEWAY_SECRET:?Set a dedicated SEARCH_GATEWAY_SECRET in .env}
       InternalServices__Messaging__BaseUrl: http://messaging:1006
@@ -215,6 +243,9 @@ services:
       InternalServices__SocialGraph__CacheSeconds: 45
       InternalAuth__RequireSignature: "true"
       InternalAuth__SendLegacySecret: "false"
+    depends_on:
+      redis:
+        condition: service_healthy
     ports:
       - "127.0.0.1:1004:1004"
     networks: [fakebook]
@@ -223,13 +254,13 @@ services:
     build:
       context: ./NotificationService
       dockerfile_inline: |
-        FROM mcr.microsoft.com/dotnet/sdk:8.0.422 AS build
+        FROM mcr.microsoft.com/dotnet/sdk:10.0.302 AS build
         WORKDIR /src
         COPY NotificationService/NotificationService.csproj NotificationService/
         RUN dotnet restore NotificationService/NotificationService.csproj
         COPY . .
         RUN dotnet publish NotificationService/NotificationService.csproj -c Release -o /app/publish --no-restore /p:UseAppHost=false
-        FROM mcr.microsoft.com/dotnet/aspnet:8.0
+        FROM mcr.microsoft.com/dotnet/aspnet:10.0
         RUN apt-get update && apt-get install -y --no-install-recommends curl \
             && rm -rf /var/lib/apt/lists/*
         WORKDIR /app
@@ -245,10 +276,11 @@ services:
       retries: 5
       start_period: 45s
     environment:
-      <<: [*dotnet-runtime, *postgres-base]
+      <<: [*dotnet-runtime, *postgres-base, *observability]
       ASPNETCORE_URLS: http://+:1005
-      ConnectionStrings__NotificationDb: Host=${DB_HOST};Port=${DB_PORT};Database=${DB_NAME};Username=${DB_USER};Password=${DB_PASSWORD};Search Path=notification;Timeout=10;Command Timeout=30
-      Database__ApplyMigrationsOnStartup: "true"
+      ConnectionStrings__NotificationDb: Host=${DB_HOST};Port=${DB_PORT};Database=${DB_NAME};Username=${NOTIFICATION_DB_USER:?Set NOTIFICATION_DB_USER in .env};Password=${NOTIFICATION_DB_PASSWORD:?Set NOTIFICATION_DB_PASSWORD in .env};Search Path=notification;Timeout=10;Command Timeout=30
+      ConnectionStrings__SecurityRedis: redis:6379
+      Database__ApplyMigrationsOnStartup: "false"
       InternalAuthentication__GatewaySecret: ${NOTIFICATION_GATEWAY_SECRET:?Set a dedicated NOTIFICATION_GATEWAY_SECRET in .env}
       InternalAuthentication__NotificationServiceSecret: ${NOTIFICATION_INTERNAL_SECRET:?Set NOTIFICATION_INTERNAL_SECRET in .env}
       InternalAuth__RequireSignature: "true"
@@ -256,6 +288,9 @@ services:
       Snowflake__NodeId: 5
       NotificationDelivery__PollMilliseconds: ${NotificationDelivery__PollMilliseconds:-250}
       NotificationDelivery__MaxIdlePollMilliseconds: ${NotificationDelivery__MaxIdlePollMilliseconds:-2000}
+    depends_on:
+      redis:
+        condition: service_healthy
     ports:
       - "127.0.0.1:1005:1005"
     networks: [fakebook]
@@ -273,9 +308,10 @@ services:
       retries: 5
       start_period: 45s
     environment:
-      <<: [*dotnet-runtime, *postgres-base]
+      <<: [*dotnet-runtime, *postgres-base, *observability]
       ASPNETCORE_URLS: http://+:1006
-      ConnectionStrings__PostgreSQL: Host=${DB_HOST};Port=${DB_PORT};Database=${DB_NAME};Username=${DB_USER};Password=${DB_PASSWORD};Search Path=messenger;Timeout=10;Command Timeout=30
+      ConnectionStrings__PostgreSQL: Host=${DB_HOST};Port=${DB_PORT};Database=${DB_NAME};Username=${MESSENGER_DB_USER:?Set MESSENGER_DB_USER in .env};Password=${MESSENGER_DB_PASSWORD:?Set MESSENGER_DB_PASSWORD in .env};Search Path=messenger;Timeout=10;Command Timeout=30
+      ConnectionStrings__SecurityRedis: redis:6379
       Gateway__InternalSharedSecret: ${MESSENGER_GATEWAY_SECRET:?Set a dedicated MESSENGER_GATEWAY_SECRET in .env}
       InternalServices__MessengerSharedSecret: ${MESSENGER_INTERNAL_SECRET:?Set MESSENGER_INTERNAL_SECRET in .env}
       InternalServices__SocialGraph__BaseUrl: http://social-graph:1002
@@ -289,6 +325,8 @@ services:
       Messaging__OutboxPollMilliseconds: ${Messaging__OutboxPollMilliseconds:-250}
       Messaging__OutboxMaxIdlePollMilliseconds: ${Messaging__OutboxMaxIdlePollMilliseconds:-2000}
     depends_on:
+      redis:
+        condition: service_healthy
       notification:
         condition: service_healthy
       upload:
@@ -310,9 +348,10 @@ services:
       retries: 5
       start_period: 45s
     environment:
-      <<: [*dotnet-runtime, *postgres-base]
+      <<: [*dotnet-runtime, *postgres-base, *observability]
       ASPNETCORE_URLS: http://+:1007
-      ConnectionStrings__PaymentDatabase: Host=${DB_HOST};Port=${DB_PORT};Database=${DB_NAME};Username=${DB_USER};Password=${DB_PASSWORD};Search Path=payment;Timeout=10;Command Timeout=30
+      ConnectionStrings__PaymentDatabase: Host=${DB_HOST};Port=${DB_PORT};Database=${DB_NAME};Username=${PAYMENT_DB_USER:?Set PAYMENT_DB_USER in .env};Password=${PAYMENT_DB_PASSWORD:?Set PAYMENT_DB_PASSWORD in .env};Search Path=payment;Timeout=10;Command Timeout=30
+      Database__ApplySchemaOnStartup: "false"
       Payment__PublicBaseUrl: ${TAILSCALE_ORIGIN:?Set TAILSCALE_ORIGIN in .env}
       Payment__FrontendPublicUrl: ${TAILSCALE_ORIGIN}
       Payment__PaymentsEnabled: ${PAYMENTS_ENABLED:-false}
@@ -348,11 +387,13 @@ services:
       retries: 5
       start_period: 60s
     environment:
-      <<: *dotnet-runtime
+      <<: [*dotnet-runtime, *observability]
       ASPNETCORE_URLS: http://+:2001
       Jwt__Issuer: fakebook-auth
       Jwt__Audience: fakebook
-      Jwt__SigningKey: ${JWT_SIGNING_KEY}
+      Jwt__PublicKeyBase64: ${JWT_PUBLIC_KEY_BASE64:?Generate JWT_PUBLIC_KEY_BASE64 with scripts/initialize-secrets.ps1}
+      Jwt__KeyId: ${JWT_KEY_ID:?Set JWT_KEY_ID in .env}
+      Jwt__LegacySigningKey: ${JWT_LEGACY_SIGNING_KEY:-}
       Gateway__FusionArchivePath: gateway.far
       Gateway__InternalSharedSecret: ${GATEWAY_SHARED_SECRET:?Set GATEWAY_SHARED_SECRET in .env}
       Gateway__SubgraphSecrets__Authentication: ${AUTH_GATEWAY_SECRET:?Set a dedicated AUTH_GATEWAY_SECRET in .env}
@@ -399,13 +440,13 @@ services:
     build:
       context: ./UploadSever/Upload-Server
       dockerfile_inline: |
-        FROM mcr.microsoft.com/dotnet/sdk:8.0.422 AS build
+        FROM mcr.microsoft.com/dotnet/sdk:10.0.302 AS build
         WORKDIR /src
         COPY Fakebook.UploadServer.csproj .
         RUN dotnet restore Fakebook.UploadServer.csproj
         COPY . .
         RUN dotnet publish Fakebook.UploadServer.csproj -c Release -o /app/publish --no-restore /p:UseAppHost=false
-        FROM mcr.microsoft.com/dotnet/aspnet:8.0
+        FROM mcr.microsoft.com/dotnet/aspnet:10.0
         RUN apt-get update && apt-get install -y --no-install-recommends curl \
             && rm -rf /var/lib/apt/lists/*
         WORKDIR /app
@@ -418,17 +459,19 @@ services:
     restart: unless-stopped
     init: true
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:4001/health"]
+      test: ["CMD", "curl", "-fsS", "http://localhost:4001/health/ready"]
       interval: 15s
       timeout: 5s
       retries: 5
       start_period: 45s
     environment:
-      <<: *dotnet-runtime
+      <<: [*dotnet-runtime, *observability]
       ASPNETCORE_URLS: http://+:4001
       Jwt__Issuer: fakebook-auth
       Jwt__Audience: fakebook
-      Jwt__SigningKey: ${JWT_SIGNING_KEY}
+      Jwt__PublicKeyBase64: ${JWT_PUBLIC_KEY_BASE64:?Generate JWT_PUBLIC_KEY_BASE64 with scripts/initialize-secrets.ps1}
+      Jwt__KeyId: ${JWT_KEY_ID:?Set JWT_KEY_ID in .env}
+      Jwt__LegacySigningKey: ${JWT_LEGACY_SIGNING_KEY:-}
       AuthService__Url: http://authentication:1001/graphql
       Cors__AllowedOrigins__0: ${TAILSCALE_ORIGIN}
       Cors__AllowedOrigins__1: ${LOCAL_FRONTEND_ORIGIN:-http://localhost:3001}
@@ -439,11 +482,14 @@ services:
       UploadStorage__PendingLifetimeMinutes: 1440
       UploadStorage__CleanupIntervalMinutes: 10
       InternalApi__SharedSecret: ${UPLOAD_INTERNAL_SECRET:?Set UPLOAD_INTERNAL_SECRET in .env}
+      ConnectionStrings__SecurityRedis: redis:6379
       InternalAuth__RequireSignature: "true"
       InternalAuth__SendLegacySecret: "false"
     volumes:
       - fakebook-media-data:/data/media
     depends_on:
+      redis:
+        condition: service_healthy
       authentication:
         condition: service_healthy
     ports:

@@ -15,10 +15,12 @@
 | Frontend | 3001 | Edge `/` |
 | Upload Server | 4001 | Edge `/media` |
 
-All PostgreSQL services use the external database configured in `.env` and own a
-separate schema. Redis is private to SocialGraph; host mode reads
-`REDIS_CONNECTION_STRING` and defaults to `127.0.0.1:6379`. Browser requests must use
-Gateway GraphQL, except authenticated multipart uploads sent to Upload Server.
+All PostgreSQL services use the external database configured in `.env`, own a
+separate schema, and run with a distinct least-privilege login. Redis has two
+independent responsibilities: SocialGraph application caching and the shared,
+fail-closed anti-replay nonce store used by internal request validators. Browser
+requests must use Gateway GraphQL, except authenticated multipart uploads sent to
+Upload Server.
 
 The current application host Tailscale address is `100.101.173.71`. TLS should still
 use the MagicDNS HTTPS origin configured by `TAILSCALE_ORIGIN`. Compose points
@@ -104,10 +106,12 @@ checks every readiness endpoint, and records process IDs/logs under `.run`:
 .\scripts\stop-local.ps1
 ```
 
-Host mode requires the configured external PostgreSQL endpoint. Redis is optional in
-host mode: SocialGraph reports `redis=postgres-fallback` and remains ready when Redis is
-unavailable. The Vite launcher proxies `/api` and `/graphql` to Gateway and `/media` to
-Upload Server, so the same relative browser URLs work through localhost or Tailscale.
+Host mode requires the configured external PostgreSQL endpoint. The launcher starts the
+checksum-verified Microsoft Garnet-compatible Redis server when no Redis endpoint is
+already available. SocialGraph may fall back to PostgreSQL for its application cache,
+but the security nonce store deliberately fails closed while unavailable. The Vite
+launcher proxies `/api` and `/graphql` to Gateway and `/media` to Upload Server, so the
+same relative browser URLs work through localhost or Tailscale.
 
 Pass `-ConfigureTailscale` to expose the same-origin Vite development edge through the
 configured tailnet HTTPS origin. Use `stop-local.ps1 -ClearTailscale` when that Serve
@@ -206,7 +210,7 @@ to subgraphs.
 
 | Trust target/key | Header or protocol |
 | --- | --- |
-| JWT signing key | `Authorization: Bearer …` |
+| JWT RS256 key pair | `Authorization: Bearer …` (`kid` selects the public key) |
 | Gateway → subgraph | `X-Gateway-Secret` |
 | Internal REST targets | `X-Internal-Timestamp`, `X-Internal-Nonce`, `X-Internal-Signature` |
 | SocialGraph legacy migration header | `X-Internal-SocialGraphService-Secret` |
@@ -224,12 +228,13 @@ validation and Gateway Production startup reject collapsed key separation.
 
 ### Databases & Redis
 
-Every service connects to the same external PostgreSQL (via `DB_HOST`/`DB_PORT`/`DB_USER`/
-`DB_PASSWORD`/`DB_NAME` in `.env`) but owns a separate schema: `auth`, `social_graph`,
-`recommendation`, `search`, `notification`, `messenger`, `payment`. Each service folder
-documents its tables in `schema.sql` / `*Schema.md`. Redis is private to SocialGraph and
-is provisioned by Docker Compose. Never write real credentials into docs or source
-control.
+Every service connects to the same external PostgreSQL host but uses its own
+`<SERVICE>_DB_USER` / `<SERVICE>_DB_PASSWORD` runtime role and owns one schema: `auth`,
+`social_graph`, `recommendation`, `search`, `notification`, `messenger`, or `payment`.
+`DB_USER` / `DB_PASSWORD` are owner-only migration credentials and are not injected into
+runtime containers. Each service folder documents its tables in `schema.sql` /
+`*Schema.md`. Compose provisions Redis for SocialGraph caching and the shared security
+nonce store. Never write real credentials into docs or source control.
 
 ### Service-to-service calls (REST)
 

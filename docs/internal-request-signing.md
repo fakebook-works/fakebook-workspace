@@ -12,9 +12,12 @@ internal HTTP connection.
   `SendLegacySecret=false`.
 - The HTTP method, path/query and exact request body are authenticated.
 - A timestamp limits the lifetime of a captured request.
-- A random nonce can be accepted only once during its retention window.
+- A random nonce can be accepted only once during its retention window, across
+  every replica, through an atomic Redis `SET key value NX EX ttl` operation.
 - Partial signing headers, malformed signatures and replayed nonces fail closed,
-  including while a service is in migration-compatible legacy mode.
+  including while a service is in migration-compatible legacy mode. When
+  signature enforcement is enabled, an unavailable nonce store returns 503
+  instead of accepting the request without replay protection.
 
 Internal transport remains private HTTP inside localhost/Docker bridge/Tailscale.
 Tailscale encrypts host-to-host traffic and TLS terminates at the tailnet edge.
@@ -69,8 +72,8 @@ middleware/handler:
 3. If any signing header is present but invalid, the request returns 403 even
    in legacy mode.
 4. Timestamp skew is at most 300 seconds by default.
-5. Nonces are exactly 32 hexadecimal characters and are single-use for 900
-   seconds by default.
+5. Nonces are exactly 32 hexadecimal characters and are reserved atomically in
+   the shared security Redis store for 900 seconds by default.
 6. The signature comparison is constant-time.
 7. The body used for validation is capped at 2 MiB by default and rewound before
    downstream model binding.
@@ -78,10 +81,10 @@ middleware/handler:
    only into the in-memory server request. This reuses the existing target
    authorization logic without transmitting the secret.
 
-Nonce caches are process-local. The current deployment runs one replica per
-service. Before horizontally scaling a target, replace that target's nonce
-cache with a shared atomic store (for example Redis `SET NX EX`) so the same
-nonce cannot be replayed against another replica.
+Nonce state is not process-local. Every validating service uses the same Redis
+deployment with an audience-specific key prefix, so replaying a captured
+request against another replica is rejected. Readiness fails and signed
+internal endpoints return 503 while that store is unavailable.
 
 ## Configuration
 
@@ -93,6 +96,9 @@ InternalAuth__SendLegacySecret=false
 InternalAuth__ClockSkewSeconds=300
 InternalAuth__NonceRetentionSeconds=900
 InternalAuth__MaxBodyBytes=2097152
+InternalAuth__RedisKeyPrefix=fakebook:internal-nonce:v1
+InternalAuth__RedisOperationTimeoutMilliseconds=1000
+ConnectionStrings__SecurityRedis=redis:6379
 ```
 
 Recommendation (Python):
@@ -102,6 +108,9 @@ INTERNAL_AUTH_REQUIRE_SIGNATURE=true
 INTERNAL_AUTH_SEND_LEGACY_SECRET=false
 INTERNAL_AUTH_CLOCK_SKEW_SECONDS=300
 INTERNAL_AUTH_NONCE_RETENTION_SECONDS=900
+INTERNAL_AUTH_REDIS_KEY_PREFIX=fakebook:internal-nonce:v1
+INTERNAL_AUTH_REDIS_TIMEOUT_SECONDS=1
+SECURITY_REDIS_URL=redis://redis:6379/0
 ```
 
 Bare service runs default to migration-compatible mode
@@ -156,4 +165,3 @@ target secrets, and are not browser-addressable through the edge. Gateway
 GraphQL additionally enforces rate, parsing, depth, cycle, planner, execution
 timeout/concurrency and batching limits. Extending v1 signing to these channels
 requires a separate Fusion/subscription-compatible protocol.
-

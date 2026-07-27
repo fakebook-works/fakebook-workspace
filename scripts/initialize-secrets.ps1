@@ -5,8 +5,10 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$dotnet = & (Join-Path $PSScriptRoot 'resolve-dotnet.ps1')
 
 $secretNames = @(
+    'GATEWAY_SHARED_SECRET',
     'AUTH_GATEWAY_SECRET',
     'SOCIALGRAPH_GATEWAY_SECRET',
     'RECOMMENDATION_GATEWAY_SECRET',
@@ -20,7 +22,9 @@ $secretNames = @(
     'RECOMMENDATION_INTERNAL_SECRET',
     'SEARCH_INTERNAL_SECRET',
     'NOTIFICATION_INTERNAL_SECRET',
-    'MESSENGER_INTERNAL_SECRET'
+    'MESSENGER_INTERNAL_SECRET',
+    'UPLOAD_INTERNAL_SECRET',
+    'PAYMENT_AUTH_SECRET'
 )
 
 function New-FakebookSecret {
@@ -70,20 +74,25 @@ foreach ($name in $secretNames) {
     $changed.Add($name)
 }
 
-if ($changed.Count -eq 0) {
-    Write-Host 'All per-service secrets are already present; no changes were made.'
-    return
-}
-
-$temporaryFile = "$EnvironmentFile.tmp"
-try {
-    [System.IO.File]::WriteAllLines($temporaryFile, $lines, [System.Text.UTF8Encoding]::new($false))
-    Move-Item -LiteralPath $temporaryFile -Destination $EnvironmentFile -Force
-}
-finally {
-    if (Test-Path -LiteralPath $temporaryFile) {
-        Remove-Item -LiteralPath $temporaryFile -Force
+if ($changed.Count -gt 0) {
+    $temporaryFile = "$EnvironmentFile.tmp"
+    try {
+        [System.IO.File]::WriteAllLines($temporaryFile, $lines, [System.Text.UTF8Encoding]::new($false))
+        Move-Item -LiteralPath $temporaryFile -Destination $EnvironmentFile -Force
     }
+    finally {
+        if (Test-Path -LiteralPath $temporaryFile) {
+            Remove-Item -LiteralPath $temporaryFile -Force
+        }
+    }
+    Write-Host ("Initialized {0} distinct per-service secrets in {1}. Values were not printed." -f $changed.Count, $EnvironmentFile)
+}
+else {
+    Write-Host 'All HMAC/encryption secrets are already present; no HMAC changes were made.'
 }
 
-Write-Host ("Initialized {0} distinct per-service secrets in {1}. Values were not printed." -f $changed.Count, $EnvironmentFile)
+$root = Split-Path -Parent $PSScriptRoot
+$jwtArguments = @('run', '--project', (Join-Path $root 'scripts\Fakebook.Maintenance'), '--', 'generate-jwt-keys', '--env-file', $EnvironmentFile)
+if ($Rotate) { $jwtArguments += '--rotate' }
+& $dotnet @jwtArguments
+if ($LASTEXITCODE -ne 0) { throw "JWT RSA key initialization failed with exit code $LASTEXITCODE." }

@@ -5,9 +5,10 @@ $root = Split-Path -Parent $PSScriptRoot
 $extensions = '.cs', '.ts', '.tsx', '.js', '.jsx', '.py', '.md', '.json', '.yml', '.yaml'
 $excluded = '\\(bin|obj|node_modules|dist|build|\.git|\.venv|\.artifacts|coverage)\\'
 $badPatterns = @(
-    ([char]0x00C3).ToString(),
-    ([char]0x00C2).ToString(),
     ([char]0xFFFD).ToString(),
+    (([char]0x00C2).ToString() + [char]0x00A0),
+    (([char]0x00E2).ToString() + [char]0x20AC),
+    (([char]0x00E2).ToString() + [char]0x2020),
     (([char]0x00E1).ToString() + [char]0x00BB),
     (([char]0x00E1).ToString() + [char]0x00BA),
     (([char]0x00C4).ToString() + [char]0x2018),

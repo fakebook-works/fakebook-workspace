@@ -77,6 +77,16 @@ Assert-ContainsLiteral $viteConfig 'env.VITE_DEV_ALLOWED_HOST' 'Vite tailnet all
 $start = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'start-local.ps1') -Raw -Encoding UTF8
 foreach ($contract in @(
     'ConnectionStrings__DefaultConnection',
+    'ConnectionStrings__SecurityRedis',
+    "New-ServiceDatabaseConnection 'AUTH'",
+    "New-ServiceDatabaseConnection 'SOCIALGRAPH'",
+    "New-ServiceDatabaseConnection 'SEARCH'",
+    "New-ServiceDatabaseConnection 'NOTIFICATION'",
+    "New-ServiceDatabaseConnection 'MESSENGER'",
+    "New-ServiceDatabaseConnection 'PAYMENT'",
+    "`$config['RECOMMENDATION_DB_USER']",
+    'Jwt__PrivateKeyBase64',
+    'Jwt__PublicKeyBase64',
     'Gateway__AuthenticationServiceSharedSecret',
     'InternalSearchService__Secret',
     'ConnectionStrings__NotificationDb',
@@ -108,14 +118,14 @@ foreach ($contract in @(
 foreach ($url in @(
     'http://127.0.0.1:1001/health/ready',
     'http://127.0.0.1:1002/health/ready',
-    'http://127.0.0.1:1003/health',
+    'http://127.0.0.1:1003/health/ready',
     'http://127.0.0.1:1004/health/ready',
     'http://127.0.0.1:1005/health/ready',
     'http://127.0.0.1:1006/health/ready',
     'http://127.0.0.1:1007/health/ready',
     'http://127.0.0.1:2001/health/ready',
     'http://127.0.0.1:3001/',
-    'http://127.0.0.1:4001/health'
+    'http://127.0.0.1:4001/health/ready'
 )) {
     Assert-ContainsLiteral $start $url "readiness URL"
 }
@@ -123,6 +133,7 @@ foreach ($url in @(
 Assert-ContainsLiteral $start 'Export SocialGraph Fusion schema' 'SocialGraph schema export before Fusion composition'
 Assert-ContainsLiteral $start 'gatewaySocialGraphSchemaPath' 'SocialGraph schema copy into Gateway source schemas'
 Assert-ContainsLiteral $start 'compose-fusion.ps1' 'Gateway Fusion archive composition'
+Assert-DoesNotContainLiteral $start "`$config['JWT_SIGNING_KEY']" 'legacy shared JWT signer'
 
 
 $status = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'status-local.ps1') -Raw -Encoding UTF8

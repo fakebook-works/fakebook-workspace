@@ -59,6 +59,26 @@ function Assert-PortAvailable {
     }
 }
 
+function Test-TcpPort([string]$HostName, [int]$Port) {
+    $client = [Net.Sockets.TcpClient]::new()
+    try {
+        $task = $client.ConnectAsync($HostName, $Port)
+        return $task.Wait(500) -and $client.Connected
+    }
+    catch { return $false }
+    finally { $client.Dispose() }
+}
+
+function Wait-TcpPort([string]$Name, [string]$HostName, [int]$Port, [Diagnostics.Process]$Process) {
+    $deadline = [DateTimeOffset]::UtcNow.AddSeconds($StartupTimeoutSeconds)
+    while ([DateTimeOffset]::UtcNow -lt $deadline) {
+        if ($Process.HasExited) { throw "$Name exited before opening $HostName`:$Port." }
+        if (Test-TcpPort $HostName $Port) { return }
+        Start-Sleep -Milliseconds 200
+    }
+    throw "$Name did not open $HostName`:$Port within $StartupTimeoutSeconds seconds."
+}
+
 function Invoke-CheckedCommand {
     param(
         [string]$Name,
@@ -251,6 +271,13 @@ $redisConnectionString = if ($config.ContainsKey('REDIS_CONNECTION_STRING') -and
 else {
     '127.0.0.1:6379,abortConnect=false,connectTimeout=500,syncTimeout=1000'
 }
+$traceSampleRatio = if ($config.ContainsKey('OTEL_TRACE_SAMPLE_RATIO') -and
+    -not [string]::IsNullOrWhiteSpace($config['OTEL_TRACE_SAMPLE_RATIO'])) {
+    $config['OTEL_TRACE_SAMPLE_RATIO']
+}
+else {
+    '0.1'
+}
 $localFrontendOrigin = $config['LOCAL_FRONTEND_ORIGIN'].TrimEnd('/')
 $tailscaleOrigin = $config['TAILSCALE_ORIGIN'].TrimEnd('/')
 
@@ -296,7 +323,7 @@ if (Test-Path -LiteralPath $processFile) {
 New-Item -ItemType Directory -Path $runRoot -Force | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $runRoot 'media') -Force | Out-Null
 
-$dotnet = (Get-Command dotnet -ErrorAction Stop).Source
+$dotnet = & (Join-Path $PSScriptRoot 'resolve-dotnet.ps1')
 $node = (Get-Command node -ErrorAction Stop).Source
 $python = Join-Path $root 'RecommendationService\.venv\Scripts\python.exe'
 if (-not (Test-Path -LiteralPath $python)) {
@@ -321,14 +348,38 @@ $projects = @(
 if (-not $SkipBuild) {
     foreach ($relativeProject in $projects) {
         $project = Join-Path $root $relativeProject
-        Invoke-CheckedCommand -Name "Build $relativeProject" -WorkingDirectory (Split-Path -Parent $project) -FilePath $dotnet -ArgumentList @('build', $project, '--configuration', 'Release', '--no-restore', '-m:1')
+        Invoke-CheckedCommand -Name "Build $relativeProject" -WorkingDirectory (Split-Path -Parent $project) -FilePath $dotnet -ArgumentList @('build', $project, '--configuration', 'Release', '-m:1')
+    }
+
+    $recommendationRequirements = Join-Path $root 'RecommendationService\Backend-Recommendation\requirements.txt'
+    $requirementsFingerprint = (Get-FileHash -LiteralPath $recommendationRequirements -Algorithm SHA256).Hash
+    $requirementsMarker = Join-Path $runRoot 'recommendation-requirements.sha256'
+    $installedFingerprint = if (Test-Path -LiteralPath $requirementsMarker) {
+        (Get-Content -LiteralPath $requirementsMarker -Raw -Encoding ASCII).Trim()
+    }
+    else { '' }
+    if ($installedFingerprint -ne $requirementsFingerprint) {
+        Invoke-CheckedCommand `
+            -Name 'Install Recommendation dependencies' `
+            -WorkingDirectory (Join-Path $root 'RecommendationService\Backend-Recommendation') `
+            -FilePath $python `
+            -ArgumentList @('-m', 'pip', 'install', '--disable-pip-version-check', '-r', $recommendationRequirements)
+        [IO.File]::WriteAllText($requirementsMarker, $requirementsFingerprint, [Text.Encoding]::ASCII)
     }
 
     $npm = (Get-Command npm.cmd -ErrorAction Stop).Source
     Invoke-CheckedCommand -Name 'Build Frontend' -WorkingDirectory (Join-Path $root 'Frontend\Frontend') -FilePath $npm -ArgumentList @('run', 'build')
 }
 
-$dbBase = "Host=$($config['DB_HOST']);Port=$($config['DB_PORT']);Database=$($config['DB_NAME']);Username=$($config['DB_USER']);Password=$($config['DB_PASSWORD']);Timeout=10;Command Timeout=30"
+function New-ServiceDatabaseConnection([string]$Prefix) {
+    return "Host=$($config['DB_HOST']);Port=$($config['DB_PORT']);Database=$($config['DB_NAME']);Username=$($config["${Prefix}_DB_USER"]);Password=$($config["${Prefix}_DB_PASSWORD"]);Timeout=10;Command Timeout=30"
+}
+$authDb = New-ServiceDatabaseConnection 'AUTH'
+$socialGraphDb = New-ServiceDatabaseConnection 'SOCIALGRAPH'
+$searchDb = New-ServiceDatabaseConnection 'SEARCH'
+$notificationDb = New-ServiceDatabaseConnection 'NOTIFICATION'
+$messengerDb = New-ServiceDatabaseConnection 'MESSENGER'
+$paymentDb = New-ServiceDatabaseConnection 'PAYMENT'
 $socialGraphProjectRoot = Join-Path $root 'SocialGraphService\SocialGraph.Api'
 $socialGraphSchemaPath = Join-Path $runRoot 'social-graph.schema.graphqls'
 $gatewaySocialGraphSchemaPath = Join-Path $root 'APIGateway\API-Gateway\fakebookGateway\Gateway\schema\SocialGraph\schema.graphqls'
@@ -337,7 +388,7 @@ Invoke-CheckedCommand `
     -WorkingDirectory $socialGraphProjectRoot `
     -FilePath $dotnet `
     -ArgumentList @(
-        'bin\Release\net8.0\SocialGraph.Api.dll',
+        'bin\Release\net10.0\SocialGraph.Api.dll',
         'schema', 'export',
         '--output', $socialGraphSchemaPath
     ) `
@@ -364,14 +415,15 @@ Invoke-CheckedCommand `
     -WorkingDirectory $searchProjectRoot `
     -FilePath $dotnet `
     -ArgumentList @(
-        'bin\Release\net8.0\BackEndSearchFakebook.dll',
+        'bin\Release\net10.0\BackEndSearchFakebook.dll',
         'schema', 'export',
         '--output', $searchSchemaPath
     ) `
     -Environment @{
         'ASPNETCORE_ENVIRONMENT' = 'Production'
         'DOTNET_ENVIRONMENT' = 'Production'
-        'ConnectionStrings__DefaultConnection' = "$dbBase;Search Path=search"
+        'ConnectionStrings__DefaultConnection' = "$searchDb;Search Path=search"
+        'Database__ApplySchemaOnStartup' = 'false'
         'InternalSearchService__Secret' = $config['SEARCH_INTERNAL_SECRET']
         'Gateway__InternalSharedSecret' = $config['SEARCH_GATEWAY_SECRET']
         'InternalServices__Messaging__BaseUrl' = 'http://127.0.0.1:1006'
@@ -389,7 +441,7 @@ Invoke-CheckedCommand `
     -WorkingDirectory $messagingProjectRoot `
     -FilePath $dotnet `
     -ArgumentList @(
-        'bin\Release\net8.0\MessengerService.dll',
+        'bin\Release\net10.0\MessengerService.dll',
         'schema', 'export',
         '--schema-name', 'Messaging',
         '--output', $messagingSchemaPath
@@ -397,7 +449,7 @@ Invoke-CheckedCommand `
     -Environment @{
         'ASPNETCORE_ENVIRONMENT' = 'Production'
         'DOTNET_ENVIRONMENT' = 'Production'
-        'ConnectionStrings__PostgreSQL' = "$dbBase;Search Path=messenger"
+        'ConnectionStrings__PostgreSQL' = "$messengerDb;Search Path=messenger"
         'Gateway__InternalSharedSecret' = $config['MESSENGER_GATEWAY_SECRET']
         'InternalServices__MessengerSharedSecret' = $config['MESSENGER_INTERNAL_SECRET']
         'InternalServices__SocialGraph__BaseUrl' = 'http://127.0.0.1:1002'
@@ -419,6 +471,8 @@ $commonDotnet = @{
     'DOTNET_EnableDiagnostics' = '0'
     'InternalAuth__RequireSignature' = 'true'
     'InternalAuth__SendLegacySecret' = 'false'
+    'ConnectionStrings__SecurityRedis' = $redisConnectionString
+    'Observability__TraceSampleRatio' = $traceSampleRatio
 }
 
 function Merge-Environment {
@@ -431,15 +485,37 @@ function Merge-Environment {
 
 try {
     $tailscaleConfigured = $false
-    $auth = Start-FakebookProcess -Name 'authentication' -Port 1001 -WorkingDirectory (Join-Path $root 'AuthenticationService\Backend-Authentication\fakebookAuth') -FilePath $dotnet -ArgumentList @('bin\Release\net8.0\fakebookAuth.dll') -Environment (Merge-Environment $commonDotnet @{
+    if (-not (Test-TcpPort '127.0.0.1' 6379)) {
+        $garnet = Get-ChildItem (Join-Path $root '.tools') -Recurse -Filter GarnetServer.exe -ErrorAction SilentlyContinue |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+        if (-not $garnet) {
+            throw 'Redis is unavailable and Microsoft Garnet is not installed. Run scripts\bootstrap-tools.ps1.'
+        }
+        $garnetWorkingDirectory = Join-Path $runRoot 'garnet'
+        New-Item -ItemType Directory -Path $garnetWorkingDirectory -Force | Out-Null
+        $securityCache = Start-FakebookProcess `
+            -Name 'security-cache' `
+            -Port 6379 `
+            -WorkingDirectory $garnetWorkingDirectory `
+            -FilePath $garnet.FullName `
+            -ArgumentList @('--bind', '127.0.0.1', '--port', '6379', '--memory', '64m', '--page', '4m', '--segment', '64m', '--index', '16m') `
+            -Environment @{ 'DOTNET_ROOT' = (Join-Path $root '.tools\dotnet10') }
+        Wait-TcpPort 'security-cache' '127.0.0.1' 6379 $securityCache
+    }
+
+    $auth = Start-FakebookProcess -Name 'authentication' -Port 1001 -WorkingDirectory (Join-Path $root 'AuthenticationService\Backend-Authentication\fakebookAuth') -FilePath $dotnet -ArgumentList @('bin\Release\net10.0\fakebookAuth.dll') -Environment (Merge-Environment $commonDotnet @{
         'ASPNETCORE_URLS' = 'http://127.0.0.1:1001'
-        'ConnectionStrings__DefaultConnection' = "$dbBase;Search Path=auth"
+        'ConnectionStrings__DefaultConnection' = "$authDb;Search Path=auth"
         'Jwt__Issuer' = 'fakebook-auth'
         'Jwt__Audience' = 'fakebook'
-        'Jwt__SigningKey' = $config['JWT_SIGNING_KEY']
+        'Jwt__PrivateKeyBase64' = $config['JWT_PRIVATE_KEY_BASE64']
+        'Jwt__KeyId' = $config['JWT_KEY_ID']
+        'Jwt__LegacySigningKey' = $config['JWT_LEGACY_SIGNING_KEY']
         'Gateway__InternalSharedSecret' = $config['AUTH_GATEWAY_SECRET']
         'Gateway__AuthenticationServiceSharedSecret' = $config['AUTHENTICATION_INTERNAL_SECRET']
         'Payment__InternalSharedSecret' = $config['PAYMENT_AUTH_SECRET']
+        'Auth__AbsoluteSessionDays' = '90'
         'Smtp__Enabled' = $config['SMTP_ENABLED']
         'Smtp__Host' = $config['SMTP_HOST']
         'Smtp__Port' = $config['SMTP_PORT']
@@ -451,9 +527,10 @@ try {
     })
     Wait-FakebookEndpoint 'authentication' 'http://127.0.0.1:1001/health/ready' $auth
 
-    $search = Start-FakebookProcess -Name 'search' -Port 1004 -WorkingDirectory (Join-Path $root 'SearchService\Backend-Search') -FilePath $dotnet -ArgumentList @('bin\Release\net8.0\BackEndSearchFakebook.dll') -Environment (Merge-Environment $commonDotnet @{
+    $search = Start-FakebookProcess -Name 'search' -Port 1004 -WorkingDirectory (Join-Path $root 'SearchService\Backend-Search') -FilePath $dotnet -ArgumentList @('bin\Release\net10.0\BackEndSearchFakebook.dll') -Environment (Merge-Environment $commonDotnet @{
         'ASPNETCORE_URLS' = 'http://127.0.0.1:1004'
-        'ConnectionStrings__DefaultConnection' = "$dbBase;Search Path=search"
+        'ConnectionStrings__DefaultConnection' = "$searchDb;Search Path=search"
+        'Database__ApplySchemaOnStartup' = 'false'
         'InternalSearchService__Secret' = $config['SEARCH_INTERNAL_SECRET']
         'Gateway__InternalSharedSecret' = $config['SEARCH_GATEWAY_SECRET']
         'InternalServices__Messaging__BaseUrl' = 'http://127.0.0.1:1006'
@@ -467,19 +544,19 @@ try {
     })
     Wait-FakebookEndpoint 'search' 'http://127.0.0.1:1004/health/ready' $search
 
-    $notification = Start-FakebookProcess -Name 'notification' -Port 1005 -WorkingDirectory (Join-Path $root 'NotificationService\NotificationService') -FilePath $dotnet -ArgumentList @('bin\Release\net8.0\NotificationService.dll') -Environment (Merge-Environment $commonDotnet @{
+    $notification = Start-FakebookProcess -Name 'notification' -Port 1005 -WorkingDirectory (Join-Path $root 'NotificationService\NotificationService') -FilePath $dotnet -ArgumentList @('bin\Release\net10.0\NotificationService.dll') -Environment (Merge-Environment $commonDotnet @{
         'ASPNETCORE_URLS' = 'http://127.0.0.1:1005'
-        'ConnectionStrings__NotificationDb' = "$dbBase;Search Path=notification"
-        'Database__ApplyMigrationsOnStartup' = 'true'
+        'ConnectionStrings__NotificationDb' = "$notificationDb;Search Path=notification"
+        'Database__ApplyMigrationsOnStartup' = 'false'
         'InternalAuthentication__GatewaySecret' = $config['NOTIFICATION_GATEWAY_SECRET']
         'InternalAuthentication__NotificationServiceSecret' = $config['NOTIFICATION_INTERNAL_SECRET']
         'Snowflake__NodeId' = '5'
     })
     Wait-FakebookEndpoint 'notification' 'http://127.0.0.1:1005/health/ready' $notification
 
-    $messaging = Start-FakebookProcess -Name 'messaging' -Port 1006 -WorkingDirectory (Join-Path $root 'MessengerService\MessengerService') -FilePath $dotnet -ArgumentList @('bin\Release\net8.0\MessengerService.dll') -Environment (Merge-Environment $commonDotnet @{
+    $messaging = Start-FakebookProcess -Name 'messaging' -Port 1006 -WorkingDirectory (Join-Path $root 'MessengerService\MessengerService') -FilePath $dotnet -ArgumentList @('bin\Release\net10.0\MessengerService.dll') -Environment (Merge-Environment $commonDotnet @{
         'ASPNETCORE_URLS' = 'http://127.0.0.1:1006'
-        'ConnectionStrings__PostgreSQL' = "$dbBase;Search Path=messenger"
+        'ConnectionStrings__PostgreSQL' = "$messengerDb;Search Path=messenger"
         'Gateway__InternalSharedSecret' = $config['MESSENGER_GATEWAY_SECRET']
         'InternalServices__MessengerSharedSecret' = $config['MESSENGER_INTERNAL_SECRET']
         'InternalServices__SocialGraph__BaseUrl' = 'http://127.0.0.1:1002'
@@ -492,8 +569,8 @@ try {
     })
     Wait-FakebookEndpoint 'messaging' 'http://127.0.0.1:1006/health/ready' $messaging
 
-    $recommendationUser = [Uri]::EscapeDataString($config['DB_USER'])
-    $recommendationPassword = [Uri]::EscapeDataString($config['DB_PASSWORD'])
+    $recommendationUser = [Uri]::EscapeDataString($config['RECOMMENDATION_DB_USER'])
+    $recommendationPassword = [Uri]::EscapeDataString($config['RECOMMENDATION_DB_PASSWORD'])
     $recommendationDatabase = [Uri]::EscapeDataString($config['DB_NAME'])
     $recommendation = Start-FakebookProcess -Name 'recommendation' -Port 1003 -WorkingDirectory (Join-Path $root 'RecommendationService\Backend-Recommendation') -FilePath $python -ArgumentList @('-m', 'uvicorn', 'ForFakebook.EmbeddingModel:app', '--host', '127.0.0.1', '--port', '1003') -Environment @{
         'DATABASE_URL' = "postgresql://$recommendationUser`:$recommendationPassword@$($config['DB_HOST']):$($config['DB_PORT'])/$recommendationDatabase`?options=-csearch_path%3Drecommendation%2Cpublic"
@@ -503,6 +580,8 @@ try {
         'SOCIAL_GRAPH_BASE_URL' = 'http://127.0.0.1:1002'
         'INTERNAL_AUTH_REQUIRE_SIGNATURE' = 'true'
         'INTERNAL_AUTH_SEND_LEGACY_SECRET' = 'false'
+        'SECURITY_REDIS_URL' = "redis://$($redisConnectionString.Split(',')[0])/0"
+        'OTEL_TRACES_SAMPLER_ARG' = $traceSampleRatio
         'RECOMMENDATION_MEDIA_ALLOWED_HOSTS' = ([uri]$tailscaleOrigin).Host
         'RECOMMENDATION_MEDIA_BASE_URL' = $tailscaleOrigin
         'RECOMMENDATION_MEDIA_REQUIRE_ALLOWLIST' = 'true'
@@ -512,11 +591,11 @@ try {
         'RECOMMENDATION_MAX_MEDIA_PIXELS' = '40000000'
         'PYTHONUNBUFFERED' = '1'
     }
-    Wait-FakebookEndpoint 'recommendation' 'http://127.0.0.1:1003/health' $recommendation
+    Wait-FakebookEndpoint 'recommendation' 'http://127.0.0.1:1003/health/ready' $recommendation
 
-    $social = Start-FakebookProcess -Name 'social-graph' -Port 1002 -WorkingDirectory (Join-Path $root 'SocialGraphService\SocialGraph.Api') -FilePath $dotnet -ArgumentList @('bin\Release\net8.0\SocialGraph.Api.dll') -Environment (Merge-Environment $commonDotnet @{
+    $social = Start-FakebookProcess -Name 'social-graph' -Port 1002 -WorkingDirectory (Join-Path $root 'SocialGraphService\SocialGraph.Api') -FilePath $dotnet -ArgumentList @('bin\Release\net10.0\SocialGraph.Api.dll') -Environment (Merge-Environment $commonDotnet @{
         'ASPNETCORE_URLS' = 'http://127.0.0.1:1002'
-        'ConnectionStrings__PostgreSQL' = "$dbBase;Search Path=social_graph"
+        'ConnectionStrings__PostgreSQL' = "$socialGraphDb;Search Path=social_graph"
         'ConnectionStrings__Redis' = $redisConnectionString
         'Gateway__InternalSharedSecret' = $config['SOCIALGRAPH_GATEWAY_SECRET']
         'InternalServices__SocialGraph__SharedSecret' = $config['SOCIALGRAPH_INTERNAL_SECRET']
@@ -533,13 +612,15 @@ try {
         'InternalServices__Upload__BaseUrl' = 'http://127.0.0.1:4001'
         'InternalServices__Upload__SharedSecret' = $config['UPLOAD_INTERNAL_SECRET']
         'IntegrationOutbox__PayloadEncryptionKey' = $config['SOCIALGRAPH_OUTBOX_ENCRYPTION_KEY']
+        'IntegrationOutbox__EnsureSchemaOnStartup' = 'false'
         'InternalServices__TimeoutSeconds' = '10'
     })
     Wait-FakebookEndpoint 'social-graph' 'http://127.0.0.1:1002/health/ready' $social
 
-    $payment = Start-FakebookProcess -Name 'payment' -Port 1007 -WorkingDirectory (Join-Path $root 'PaymentService\Backend-Payment\fakebookPayment') -FilePath $dotnet -ArgumentList @('bin\Release\net8.0\fakebookPayment.dll') -Environment (Merge-Environment $commonDotnet @{
+    $payment = Start-FakebookProcess -Name 'payment' -Port 1007 -WorkingDirectory (Join-Path $root 'PaymentService\Backend-Payment\fakebookPayment') -FilePath $dotnet -ArgumentList @('bin\Release\net10.0\fakebookPayment.dll') -Environment (Merge-Environment $commonDotnet @{
         'ASPNETCORE_URLS' = 'http://127.0.0.1:1007'
-        'ConnectionStrings__PaymentDatabase' = "$dbBase;Search Path=payment"
+        'ConnectionStrings__PaymentDatabase' = "$paymentDb;Search Path=payment"
+        'Database__ApplySchemaOnStartup' = 'false'
         'Payment__PublicBaseUrl' = $tailscaleOrigin
         'Payment__FrontendPublicUrl' = $tailscaleOrigin
         'Payment__PaymentsEnabled' = $config['PAYMENTS_ENABLED']
@@ -554,11 +635,13 @@ try {
     })
     Wait-FakebookEndpoint 'payment' 'http://127.0.0.1:1007/health/ready' $payment
 
-    $upload = Start-FakebookProcess -Name 'upload' -Port 4001 -WorkingDirectory (Join-Path $root 'UploadSever\Upload-Server') -FilePath $dotnet -ArgumentList @('bin\Release\net8.0\Fakebook.UploadServer.dll') -Environment (Merge-Environment $commonDotnet @{
+    $upload = Start-FakebookProcess -Name 'upload' -Port 4001 -WorkingDirectory (Join-Path $root 'UploadSever\Upload-Server') -FilePath $dotnet -ArgumentList @('bin\Release\net10.0\Fakebook.UploadServer.dll') -Environment (Merge-Environment $commonDotnet @{
         'ASPNETCORE_URLS' = 'http://127.0.0.1:4001'
         'Jwt__Issuer' = 'fakebook-auth'
         'Jwt__Audience' = 'fakebook'
-        'Jwt__SigningKey' = $config['JWT_SIGNING_KEY']
+        'Jwt__PublicKeyBase64' = $config['JWT_PUBLIC_KEY_BASE64']
+        'Jwt__KeyId' = $config['JWT_KEY_ID']
+        'Jwt__LegacySigningKey' = $config['JWT_LEGACY_SIGNING_KEY']
         'AuthService__Url' = 'http://127.0.0.1:1001/graphql'
         'Cors__AllowedOrigins__0' = $localFrontendOrigin
         'Cors__AllowedOrigins__1' = $tailscaleOrigin
@@ -568,13 +651,15 @@ try {
         'UploadStorage__CleanupIntervalMinutes' = '10'
         'InternalApi__SharedSecret' = $config['UPLOAD_INTERNAL_SECRET']
     })
-    Wait-FakebookEndpoint 'upload' 'http://127.0.0.1:4001/health' $upload
+    Wait-FakebookEndpoint 'upload' 'http://127.0.0.1:4001/health/ready' $upload
 
-    $gateway = Start-FakebookProcess -Name 'gateway' -Port 2001 -WorkingDirectory $gatewayRoot -FilePath $dotnet -ArgumentList @('bin\Release\net8.0\fakebookGateway.dll') -Environment (Merge-Environment $commonDotnet @{
+    $gateway = Start-FakebookProcess -Name 'gateway' -Port 2001 -WorkingDirectory $gatewayRoot -FilePath $dotnet -ArgumentList @('bin\Release\net10.0\fakebookGateway.dll') -Environment (Merge-Environment $commonDotnet @{
         'ASPNETCORE_URLS' = 'http://127.0.0.1:2001'
         'Jwt__Issuer' = 'fakebook-auth'
         'Jwt__Audience' = 'fakebook'
-        'Jwt__SigningKey' = $config['JWT_SIGNING_KEY']
+        'Jwt__PublicKeyBase64' = $config['JWT_PUBLIC_KEY_BASE64']
+        'Jwt__KeyId' = $config['JWT_KEY_ID']
+        'Jwt__LegacySigningKey' = $config['JWT_LEGACY_SIGNING_KEY']
         'Gateway__FusionArchivePath' = 'gateway.local.far'
         'Gateway__InternalSharedSecret' = $config['GATEWAY_SHARED_SECRET']
         'Gateway__SubgraphSecrets__Authentication' = $config['AUTH_GATEWAY_SECRET']

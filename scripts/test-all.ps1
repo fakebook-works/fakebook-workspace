@@ -5,6 +5,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
+$dotnet = & (Join-Path $PSScriptRoot 'resolve-dotnet.ps1')
 $results = [System.Collections.Generic.List[object]]::new()
 
 function Invoke-FakebookCheck {
@@ -49,7 +50,7 @@ Invoke-FakebookCheck 'Canonical ports' $root {
     & "$root\scripts\check-ports.ps1"
 }
 Invoke-FakebookCheck 'Maintenance and demo tooling' $root {
-    dotnet build .\scripts\Fakebook.Maintenance\Fakebook.Maintenance.csproj --no-restore
+    & $dotnet build .\scripts\Fakebook.Maintenance\Fakebook.Maintenance.csproj
     if ($LASTEXITCODE -ne 0) { return }
     foreach ($scriptName in @('reset-demo.ps1', 'seed-demo.ps1', 'verify-demo.ps1')) {
         $tokens = $null
@@ -67,28 +68,28 @@ Invoke-FakebookCheck 'Maintenance and demo tooling' $root {
 }
 
 Invoke-FakebookCheck 'Authentication' "$root\AuthenticationService\Backend-Authentication" {
-    dotnet test .\fakebookAuth.sln --no-restore
+    & $dotnet test .\fakebookAuth.sln
 }
 Invoke-FakebookCheck 'SocialGraph' "$root\SocialGraphService" {
-    dotnet test .\SocialGraphService.sln --no-restore
+    & $dotnet test .\SocialGraphService.sln
 }
 Invoke-FakebookCheck 'Search' "$root\SearchService\Backend-Search" {
-    dotnet test .\BackEndSearchFakebook.sln --no-restore
+    & $dotnet test .\BackEndSearchFakebook.sln
 }
 Invoke-FakebookCheck 'Notification' "$root\NotificationService" {
-    dotnet test .\NotificationService.Tests\NotificationService.Tests.csproj --no-restore
+    & $dotnet test .\NotificationService.Tests\NotificationService.Tests.csproj
 }
 Invoke-FakebookCheck 'Messenger' "$root\MessengerService" {
-    dotnet test .\MessengerService.sln --no-restore
+    & $dotnet test .\MessengerService.sln
 }
 Invoke-FakebookCheck 'Payment unit tests' "$root\PaymentService\Backend-Payment" {
-    dotnet test .\fakebookPayment.sln --no-restore --filter 'FullyQualifiedName!~GraphQLCheckoutEndpointTests&FullyQualifiedName!~PaymentRepositoryIntegrationTests&FullyQualifiedName!~SchemaMigrationTests&FullyQualifiedName!~WebhookEndpointTests'
+    & $dotnet test .\fakebookPayment.sln --filter 'FullyQualifiedName!~GraphQLCheckoutEndpointTests&FullyQualifiedName!~PaymentRepositoryIntegrationTests&FullyQualifiedName!~SchemaMigrationTests&FullyQualifiedName!~WebhookEndpointTests'
 }
 Invoke-FakebookCheck 'Upload' "$root\UploadSever\Upload-Server" {
-    dotnet test .\Upload-Server.Tests\Upload-Server.Tests.csproj --no-restore
+    & $dotnet test .\Upload-Server.Tests\Upload-Server.Tests.csproj
 }
 Invoke-FakebookCheck 'Gateway' "$root\APIGateway\API-Gateway" {
-    dotnet test .\fakebookGateway.sln --no-restore
+    & $dotnet test .\fakebookGateway.sln
 }
 Invoke-FakebookCheck 'Recommendation' "$root\RecommendationService\Backend-Recommendation" {
     $python = "$root\RecommendationService\.venv\Scripts\python.exe"
@@ -108,7 +109,7 @@ Invoke-FakebookCheck 'Frontend lint' "$root\Frontend\Frontend" {
 $docker = Get-Command docker -ErrorAction SilentlyContinue
 if ($docker) {
     Invoke-FakebookCheck 'Payment integration tests' "$root\PaymentService\Backend-Payment" {
-        dotnet test .\fakebookPayment.sln --no-restore
+        & $dotnet test .\fakebookPayment.sln
     }
     Invoke-FakebookCheck 'Docker Compose validation' $root {
         docker compose config --quiet

@@ -5,6 +5,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$dotnet = & (Join-Path $PSScriptRoot 'resolve-dotnet.ps1')
 
 if (-not (Test-Path -LiteralPath $EnvironmentFile)) {
     throw "Environment file was not found: $EnvironmentFile"
@@ -28,7 +29,12 @@ if (-not $values.ContainsKey('SMTP_ENABLE_SSL') -and $values.ContainsKey('Enable
 
 $required = @(
     'DB_HOST', 'DB_PORT', 'DB_NAME', 'DB_USER', 'DB_PASSWORD',
-    'JWT_SIGNING_KEY', 'GATEWAY_SHARED_SECRET', 'PAYMENT_AUTH_SECRET',
+    'AUTH_DB_USER', 'AUTH_DB_PASSWORD', 'SOCIALGRAPH_DB_USER', 'SOCIALGRAPH_DB_PASSWORD',
+    'RECOMMENDATION_DB_USER', 'RECOMMENDATION_DB_PASSWORD', 'SEARCH_DB_USER', 'SEARCH_DB_PASSWORD',
+    'NOTIFICATION_DB_USER', 'NOTIFICATION_DB_PASSWORD', 'MESSENGER_DB_USER', 'MESSENGER_DB_PASSWORD',
+    'PAYMENT_DB_USER', 'PAYMENT_DB_PASSWORD',
+    'JWT_PRIVATE_KEY_BASE64', 'JWT_PUBLIC_KEY_BASE64', 'JWT_KEY_ID',
+    'GATEWAY_SHARED_SECRET', 'PAYMENT_AUTH_SECRET',
     'AUTH_GATEWAY_SECRET', 'SOCIALGRAPH_GATEWAY_SECRET',
     'RECOMMENDATION_GATEWAY_SECRET', 'SEARCH_GATEWAY_SECRET',
     'NOTIFICATION_GATEWAY_SECRET', 'MESSENGER_GATEWAY_SECRET',
@@ -49,7 +55,7 @@ if ($missing.Count -gt 0) {
 }
 
 $secretNames = @(
-    'JWT_SIGNING_KEY', 'GATEWAY_SHARED_SECRET', 'PAYMENT_AUTH_SECRET',
+    'JWT_PRIVATE_KEY_BASE64', 'GATEWAY_SHARED_SECRET', 'PAYMENT_AUTH_SECRET',
     'AUTH_GATEWAY_SECRET', 'SOCIALGRAPH_GATEWAY_SECRET',
     'RECOMMENDATION_GATEWAY_SECRET', 'SEARCH_GATEWAY_SECRET',
     'NOTIFICATION_GATEWAY_SECRET', 'MESSENGER_GATEWAY_SECRET',
@@ -57,12 +63,29 @@ $secretNames = @(
     'SOCIALGRAPH_INTERNAL_SECRET', 'SOCIALGRAPH_OUTBOX_ENCRYPTION_KEY',
     'RECOMMENDATION_INTERNAL_SECRET',
     'SEARCH_INTERNAL_SECRET', 'NOTIFICATION_INTERNAL_SECRET',
-    'MESSENGER_INTERNAL_SECRET', 'UPLOAD_INTERNAL_SECRET'
+    'MESSENGER_INTERNAL_SECRET', 'UPLOAD_INTERNAL_SECRET',
+    'AUTH_DB_PASSWORD', 'SOCIALGRAPH_DB_PASSWORD', 'RECOMMENDATION_DB_PASSWORD',
+    'SEARCH_DB_PASSWORD', 'NOTIFICATION_DB_PASSWORD', 'MESSENGER_DB_PASSWORD', 'PAYMENT_DB_PASSWORD'
 )
 
 $shortSecrets = @($secretNames | Where-Object { $values[$_].Length -lt 32 })
 if ($shortSecrets.Count -gt 0) {
     throw "Secrets shorter than 32 characters: $($shortSecrets -join ', ')"
+}
+
+$expectedDatabaseUsers = @{
+    AUTH_DB_USER = 'fakebook_auth'
+    SOCIALGRAPH_DB_USER = 'fakebook_social_graph'
+    RECOMMENDATION_DB_USER = 'fakebook_recommendation'
+    SEARCH_DB_USER = 'fakebook_search'
+    NOTIFICATION_DB_USER = 'fakebook_notification'
+    MESSENGER_DB_USER = 'fakebook_messenger'
+    PAYMENT_DB_USER = 'fakebook_payment'
+}
+foreach ($entry in $expectedDatabaseUsers.GetEnumerator()) {
+    if ($values[$entry.Key] -ne $entry.Value) {
+        throw "$($entry.Key) must equal '$($entry.Value)'."
+    }
 }
 
 $smtpEnabled = $false
@@ -135,6 +158,13 @@ if (-not $SkipNetwork) {
     if (-not $reachable) {
         throw 'The configured PostgreSQL endpoint is not reachable over TCP.'
     }
+}
+
+
+$root = Split-Path -Parent $PSScriptRoot
+& $dotnet run --project (Join-Path $root 'scripts\Fakebook.Maintenance') -- generate-jwt-keys --env-file $EnvironmentFile --json | Out-Null
+if ($LASTEXITCODE -ne 0) {
+    throw 'JWT_PRIVATE_KEY_BASE64/JWT_PUBLIC_KEY_BASE64 are invalid or do not form a matching RSA key pair.'
 }
 
 Write-Host ("Environment validation passed: {0} distinct secrets, PostgreSQL configuration preserved{1}." -f $secretNames.Count, $(if ($SkipNetwork) { '' } else { ' and reachable' })) -ForegroundColor Green
