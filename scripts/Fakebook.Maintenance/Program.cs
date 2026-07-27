@@ -8,7 +8,7 @@ string[] managedSchemas = ["auth", "social_graph", "recommendation", "search", "
 
 if (args.Length == 0)
 {
-    Fail("Usage: Fakebook.Maintenance <preflight|apply|verify|invariants|history|activate-users> [options]");
+    Fail("Usage: Fakebook.Maintenance <preflight|apply|migrate|verify|invariants|history|activate-users> [options]");
 }
 
 var command = args[0].ToLowerInvariant();
@@ -191,6 +191,70 @@ switch (command)
         var updated = await update.ExecuteNonQueryAsync();
         if (updated != emails.Length) Fail($"Expected to activate {emails.Length} demo users but updated {updated}.");
         Print(new { success = true, activated = updated }, options.Flag("json"));
+        break;
+    }
+    case "migrate":
+    {
+        // The service migrations are plain .sql files that were documented as "run with
+        // psql". psql is not installed on every workstation, and when it is missing the
+        // command just fails, which looks indistinguishable from having applied cleanly.
+        // This runs the same files through the Npgsql client already referenced here.
+        //
+        // Unrelated to the "apply" command above, which TRUNCATEs the managed schemas.
+        if (!options.Flag("writers-stopped"))
+            Fail("migrate requires --writers-stopped: index builds lock the tables they touch.");
+
+        var files = options.Values("file")
+            .Select(value => Path.GetFullPath(value.Trim()))
+            .Where(value => value.Length > 0)
+            .ToList();
+        if (files.Count == 0)
+        {
+            // Deliberately no "apply everything" default. These are hand-applied .sql files
+            // with no history table, so nothing can tell which have already run, and the
+            // older ones are not re-runnable — 20260713_add_gender.sql still targets the
+            // "fb" schema that a later migration renamed to "auth". Naming the files is the
+            // only safe contract.
+            var available = new List<string>();
+            foreach (var folder in new[]
+                     {
+                         Path.Combine(workspace, "SocialGraphService", "SocialGraph.Api", "migrations"),
+                         Path.Combine(workspace, "AuthenticationService", "Backend-Authentication", "fakebookAuth", "migrations")
+                     })
+            {
+                if (Directory.Exists(folder)) available.AddRange(Directory.GetFiles(folder, "*.sql"));
+            }
+            available.Sort(StringComparer.OrdinalIgnoreCase);
+            var listing = available.Count == 0
+                ? "  (none found)"
+                : string.Join(Environment.NewLine, available.Select(item => "  " + Path.GetRelativePath(workspace, item)));
+            Fail(
+                "migrate requires at least one --file. There is no migration history table, so "
+                + "which files still need applying is a decision, not something to infer."
+                + Environment.NewLine + "Available:" + Environment.NewLine + listing);
+        }
+
+        var applied = new List<object>();
+        foreach (var file in files)
+        {
+            if (!File.Exists(file)) Fail($"Migration file not found: {file}");
+            var sql = await File.ReadAllTextAsync(file);
+
+            // Each file carries its own BEGIN/COMMIT, so it applies completely or not at all.
+            await using var migration = new NpgsqlCommand(sql, connection) { CommandTimeout = 600 };
+            try
+            {
+                await migration.ExecuteNonQueryAsync();
+            }
+            catch (PostgresException exception)
+            {
+                Fail($"{Path.GetFileName(file)} failed: {exception.MessageText}");
+            }
+
+            applied.Add(new { file = Path.GetFileName(file), path = file });
+        }
+
+        Print(new { success = true, database = identity.Database, applied }, options.Flag("json"));
         break;
     }
     default:
