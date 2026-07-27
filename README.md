@@ -41,6 +41,9 @@ JWT, or existing secret values:
 
 ### Security baseline
 
+- API changes must follow [the API security contract](docs/api-security-contract.md) and
+  pass `scripts/check-api-security-contracts.ps1`; coding-agent entry points are
+  `AGENTS.md` and `CLAUDE.md`.
 - Edge nginx and Gateway independently rate-limit `/graphql`; Upload Server has
   edge and authenticated per-user limits.
 - Fusion rejects excessive depth, field/node/token counts, field cycles and unsafe

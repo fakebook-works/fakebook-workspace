@@ -36,6 +36,9 @@ function Invoke-FakebookCheck {
 Invoke-FakebookCheck 'Local orchestration contracts' $root {
     & "$root\scripts\check-local-orchestration.ps1"
 }
+Invoke-FakebookCheck 'API security contracts' $root {
+    & "$root\scripts\check-api-security-contracts.ps1"
+}
 
 Invoke-FakebookCheck 'Environment configuration' $root {
     & "$root\scripts\validate-environment.ps1"

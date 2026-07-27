@@ -33,7 +33,8 @@ $scriptNames = @(
     'stop-local.ps1',
     'status-local.ps1',
     'smoke-local.ps1',
-    'validate-environment.ps1'
+    'validate-environment.ps1',
+    'check-api-security-contracts.ps1'
 )
 
 foreach ($scriptName in $scriptNames) {

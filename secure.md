@@ -137,6 +137,8 @@ Migration 20260727_add_absolute_session_expiry.sql thêm absolute_expires_at.
 - Auth ký bằng RSA private key PKCS#8 tối thiểu 2048 bit.
 - Gateway và Upload chỉ nhận public key SPKI.
 - Token có kid; validator khóa thuật toán ở RS256.
+- Auth tạo và validate token bằng System.IdentityModel.Tokens.Jwt thay vì tự ghép/parse JWT.
+- Validator giới hạn kích thước token, issuer, audience, lifetime, key type, thuật toán và kid.
 - JWT_LEGACY_SIGNING_KEY chỉ dùng cho cửa sổ chuyển đổi token HS256 cũ và hiện để trống.
 - Script khởi tạo tạo cặp key đồng bộ và không in key ra terminal.
 
@@ -222,13 +224,87 @@ sớm khi CPU work còn chạy. Work factor do server cấu hình và validate 1
 - Redis và OpenTelemetry Collector image được pin digest.
 - Secret scan không thấy giá trị thật trong file repository.
 
+### 5.6. Sổ kiểm kê đầy đủ các bản vá bảo mật và hardening
+
+Bảng này bổ sung những thay đổi trước đây chỉ được nhắc gián tiếp. Nó được đối chiếu với
+lịch sử Git ngày 26–27/07/2026. Cột “Loại” phân biệt lỗ hổng trực tiếp với hardening
+availability/defense-in-depth để báo cáo không đánh đồng mọi tối ưu hiệu năng thành CVE.
+
+| Biên/service | Vấn đề hoặc rủi ro đã xử lý | Loại | Bằng chứng đại diện |
+| --- | --- | --- | --- |
+| Gateway edge | Browser có thể tự gửi X-User-Id/X-Session-Id/internal headers | Vulnerability | strip toàn bộ trusted header trước auth; 9565eec |
+| Gateway edge | JWT hợp lệ nhưng session đã revoke vẫn dùng được | Vulnerability | live Auth session validation và watchdog SSE; 16bdd46 |
+| Gateway edge | Một rate-limit bucket toàn cục và client IP không chính xác sau proxy | Vulnerability | partition đúng caller/IP, forwarded address server-owned; 2022c91 |
+| Gateway GraphQL | Query sâu/rộng/cycle/planner expansion và batching gây amplification | Vulnerability/DoS | parser/depth/cycle/planner/concurrency/timeout limits; 05c729d |
+| Gateway GraphQL | Raw refresh token lọt qua composed response | Vulnerability | field internal, response scrub và cookie instruction; c269496 |
+| Browser cookie | Refresh cookie bị gửi tới /media và path không đồng bộ | Vulnerability | cookie path chỉ /graphql; e0f7505, 0bf6bc1 |
+| PayOS webhook | Body lớn, spoofed browser context hoặc thay đổi bytes khi proxy | Vulnerability | JSON/body cap, IP rate-limit, exact bytes, không forward cookie/auth/trusted header; 08a0c76 |
+| Edge headers | Clickjacking, MIME sniffing và thiếu transport/browser policy | Defense-in-depth | frame/nosniff/referrer/permissions/HSTS; workspace phase 1/2 |
+| Secret isolation | Một shared-secret fallback làm compromise một service lan cả fleet | Vulnerability | secret riêng từng subgraph/REST target, Production/env validation chặn trùng/fallback; 9565eec, 0716985 |
+| Internal REST | Raw secret trên wire, không body integrity và replay được | Vulnerability | HMAC canonical request, timestamp, body hash, Redis nonce NX/EX; các commit HMAC + phase 3 |
+| Internal REST | Replay sang replica khác hoặc Redis chết nhưng request vẫn qua | Vulnerability | shared nonce store, readiness unhealthy, trả 503 fail-closed; 1233b98/dc8a482/1a40cd4/dfed7e7/06c95ea/00f9816/ecc94e3 |
+| Authentication | Flood register/login tạo BCrypt task không giới hạn | DoS | concurrency 2, queue 16, timeout lúc chờ, permit giữ tới khi CPU work kết thúc; 8c55807 |
+| Authentication | Login/resend phân biệt account tồn tại/trạng thái | Vulnerability | response/timing/status đồng nhất và dummy verify; 9998529 |
+| Authentication | Khoá tài khoản nạn nhân bằng failure counter từ xa | Vulnerability | chỉ tăng counter ở credential path hợp lệ; 9998529 |
+| Authentication | OTP/login/password endpoint bị brute-force | Vulnerability | per-account/window limits, cooldown, audit indexes; dddd517/b9e1343/1f20723 |
+| Authentication | Identifier tùy ý làm phình/log-injection audit | Vulnerability | normalize/bound identifier và retention theo batch; 9998529/9d297cd |
+| Authentication | Refresh token cũ bị tái sử dụng | Vulnerability | rotate, hash at rest, compromise flow revoke; 2ab0757 |
+| Authentication | Sliding session sống vô hạn | Vulnerability | absolute_expires_at 90 ngày; 4ffbfcd |
+| JWT | HS256 cho verifier quyền tự ký và parser JWT tự viết | Vulnerability/defense-in-depth | RS256 private/public split, kid/alg khóa chặt, IdentityModel chuẩn; 4ffbfcd/cac3c9c |
+| SocialGraph | Media URL của user khác được gắn rồi xoá qua cascade | Vulnerability | authorize owner trước persist, delete khi parent cuối mất; cbd6484/9cb4758 |
+| SocialGraph | Story/reel/share source bỏ privacy hoặc block | Vulnerability | privacy read-time và block hai chiều; 65b0667/0860f13 |
+| SocialGraph | Tag/mention/list/comment/group member/story viewer bỏ block | Vulnerability | BlockVisibilityService và regression matrix; 00f9816 |
+| SocialGraph | Đăng ký lỗi để lại profile không có Auth identity | Integrity | Auth-first saga, idempotent projections, compensation; 00f9816 |
+| SocialGraph outbox | Credential/password trong outbox plaintext hoặc retry vô hạn | Vulnerability/availability | payload protector, bounded attempts, dead-letter, lỗi permanent/retryable |
+| SocialGraph runtime | Xoá user/query hydrate/cache có thể giữ lock hoặc dùng tài nguyên không giới hạn | Availability | bounded delete batches, batched hydration, cache cap/expiry/rollback invalidation; 74a70a3/ea91e7a/709e0c9 |
+| Upload | Chỉ tin JWT mà không kiểm tra session hiện tại | Vulnerability | gọi Auth me/session contract; e6ae7ca |
+| Upload | Path traversal, giả extension/MIME/magic, active payload sau 8 KB | Vulnerability | safe leaf/GUID name, allowlist, magic, full-stream overlapping scan; d8b0d9e/ecc94e3 |
+| Upload | Upload flood và file/request không giới hạn | DoS | per-user/edge rate-limit, file count/body/image/video caps; d8b0d9e |
+| Upload lifecycle | Finalize/delete asset không kiểm tra owner | Vulnerability | owner-scoped internal lifecycle và parent authorization; 9cb4758 |
+| Upload response | Browser sniff active content | Defense-in-depth | X-Content-Type-Options nosniff; ecc94e3 |
+| Recommendation | User media URL ép worker gọi metadata/internal/private host | High/SSRF | exact allowlist, DNS/IP guard, no redirect, stream/time caps, bounded temp decode; 046f5fa |
+| Recommendation | Retry POST có thể nhân đôi interaction/mutation | Integrity | retry chỉ GET/HEAD/OPTIONS; dfed7e7 |
+| Messenger | Browser spoof trusted identity | Vulnerability | GatewayTrustMiddleware và ITrustedUserContextAccessor; fb6e83f |
+| Messenger outbox | Giữ DB lock khi gọi mạng và retry vô hạn | Availability | release lock trước dispatch, bounded retry/dead-letter; 103a5b7 |
+| Realtime frontend | Subscription reconnect storm khi Gateway từ chối | Availability/DoS | dừng reconnect khi auth/session rejected; ad1af47 |
+| Realtime frontend | Nhiều chat tạo nhiều stream không cần thiết | Availability | một subscription theo dõi nhiều conversation, đóng stream khi dock ẩn; 94133ed/722f5c6/f9d2873 |
+| Notification | Bảng delivered tăng vô hạn | Availability/data retention | retention theo thời hạn; 5b065ff |
+| PostgreSQL | Mọi service dùng migration superuser/mật khẩu yếu | Vulnerability | 7 role schema-scoped, cross-schema denial, owner password rotate; 0716985 |
+| Runtime container | Một số service chạy root và health không chờ dependency | Defense-in-depth/availability | non-root user, readiness/dependency ordering; b75669c |
+| Supply chain | Floating framework/Python/tool/image versions | Defense-in-depth | package/image digest pins, NuGet/pip/npm audit, checksum tool bootstrap |
+| Telemetry | Retry/trace vô tình log body/token hoặc nhân đôi unsafe mutation | Defense-in-depth/integrity | body/header redaction policy, safe-method retry, OTLP optional; phase 3 |
+
+### 5.7. Guardrail cho API do agent mới viết
+
+Đã thêm ba tầng để quy tắc trên không chỉ nằm trong báo cáo:
+
+1. AGENTS.md và CLAUDE.md là điểm vào tự động cho Codex/Claude Code; mỗi repository
+   service/frontend cũng có AGENTS.md riêng để rule vẫn được nạp khi clone standalone.
+2. docs/api-security-contract.md định nghĩa trust boundary, identity accessor, internal
+   signing, privacy/block, outbox, DB, upload, SSRF, telemetry và test bắt buộc.
+3. scripts/check-api-security-contracts.ps1 được gọi trong test-all và chặn drift của:
+   - 7 bản InternalRequestSigning .NET;
+   - Redis nonce fail-closed và managed Compose enforcement;
+   - JWT private/public split và Auth IdentityModel validator;
+   - Gateway trusted-header stripping cùng GraphQL resource limits;
+   - BCrypt isolation;
+   - safe-method retry;
+   - SocialGraph block/saga/outbox protection;
+   - Upload full scan;
+   - Recommendation SSRF guard;
+   - DB migration-owner leakage vào runtime.
+
+Guard script chứng minh các control cấu trúc vẫn tồn tại, nhưng không thể chứng minh mọi
+business rule mới là đúng. API mới vẫn phải có negative authorization/privacy/ownership
+tests và review data flow trước merge.
+
 ## 6. Kiểm chứng
 
 ### 6.1. Test tự động
 
 | Thành phần | Kết quả |
 | --- | ---: |
-| Authentication | 34/34 |
+| Authentication | 35/35 |
 | SocialGraph | 221/221 |
 | Search | 34/34 |
 | Notification | 29/29 |
@@ -239,9 +315,10 @@ sớm khi CPU work còn chạy. Work factor do server cấu hình và validate 1
 | Recommendation Python | 54/54 |
 | Frontend Vitest | 293/293 |
 | Frontend build/lint | pass |
+| API security contract guard | pass |
 | Compose standalone validation | pass |
 
-Tổng: **522 backend/Python test + 293 frontend test = 815 test pass**.
+Tổng: **523 backend/Python test + 293 frontend test = 816 test pass**.
 
 ### 6.2. Full-stack smoke
 
@@ -322,20 +399,20 @@ Các repo service cũng đã có commit riêng cho media ownership, story privac
 Gateway refresh hardening, enumeration/identifier, SSE session watchdog, retention,
 indexing và CI. Giai đoạn 3 tiếp nối các mốc đó, không revert chúng.
 
-Commit phase 3 đã kiểm chứng:
+Commit mới nhất của phase 3 và guardrail đã kiểm chứng:
 
 | Repo | Commit |
 | --- | --- |
-| Gateway | 05c729d |
-| Authentication | 4ffbfcd |
-| Frontend toolchain | 4f40a42 |
-| Messenger | 1233b98 |
-| Notification | dc8a482 |
-| Payment | 1a40cd4 |
-| Recommendation | dfed7e7 |
-| Search | 06c95ea |
-| SocialGraph | 00f9816 |
-| Upload | ecc94e3 |
+| Gateway | 644746c |
+| Authentication | cac3c9c |
+| Frontend | a9b0170 |
+| Messenger | 8392f0f |
+| Notification | 55ba737 |
+| Payment | 020aae1 |
+| Recommendation | 51d607a |
+| Search | 08cd571 |
+| SocialGraph | 532d2a4 |
+| Upload | 6e9ef5e |
 
 services.manifest.json là danh sách commit canonical sau vòng verify cuối:
 
