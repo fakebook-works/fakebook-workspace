@@ -516,6 +516,10 @@ try {
         'Gateway__AuthenticationServiceSharedSecret' = $config['AUTHENTICATION_INTERNAL_SECRET']
         'Payment__InternalSharedSecret' = $config['PAYMENT_AUTH_SECRET']
         'Auth__AbsoluteSessionDays' = '90'
+        # The host launcher is explicitly served at http://localhost:3001. Production-like
+        # Docker/Tailscale keeps Secure=true; the localhost-only process must allow the browser
+        # to retain its HttpOnly refresh cookie so the 15-minute access token can rotate.
+        'Auth__RefreshTokenCookieSecure' = 'false'
         'Smtp__Enabled' = $config['SMTP_ENABLED']
         'Smtp__Host' = $config['SMTP_HOST']
         'Smtp__Port' = $config['SMTP_PORT']
@@ -586,7 +590,7 @@ try {
         'RECOMMENDATION_MEDIA_BASE_URL' = $tailscaleOrigin
         'RECOMMENDATION_MEDIA_REQUIRE_ALLOWLIST' = 'true'
         'RECOMMENDATION_MEDIA_MAX_BYTES' = '26214400'
-        'RECOMMENDATION_VIDEO_MAX_BYTES' = '104857600'
+        'RECOMMENDATION_VIDEO_MAX_BYTES' = '524288000'
         'RECOMMENDATION_MAX_VIDEO_FRAMES' = '24'
         'RECOMMENDATION_MAX_MEDIA_PIXELS' = '40000000'
         'PYTHONUNBUFFERED' = '1'

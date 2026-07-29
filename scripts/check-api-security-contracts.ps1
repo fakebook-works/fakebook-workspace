@@ -117,6 +117,35 @@ Assert-DoesNotContainLiteral $compose 'Jwt__SigningKey:' 'legacy fleet-wide JWT 
 Assert-DoesNotContainLiteral $compose ('Username=$' + '{DB_USER}') 'migration owner in runtime connection strings'
 Assert-DoesNotContainLiteral $compose ('Password=$' + '{DB_PASSWORD}') 'migration owner in runtime connection strings'
 
+$deployCompose = Read-WorkspaceText 'docker-compose.yaml'
+Assert-LiteralCount $deployCompose 'InternalAuth__RequireSignature: "true"' 7 'deploy signature enforcement'
+Assert-LiteralCount $deployCompose 'InternalAuth__SendLegacySecret: "false"' 7 'deploy legacy-secret transmission disablement'
+Assert-LiteralCount $deployCompose 'ConnectionStrings__SecurityRedis: redis:6379' 6 'deploy .NET security Redis wiring'
+Assert-LiteralCount $deployCompose 'SECURITY_REDIS_URL: redis://redis:6379/0' 1 'deploy Python security Redis wiring'
+Assert-LiteralCount $deployCompose 'Jwt__PrivateKeyBase64:' 1 'deploy Auth-only JWT private key'
+Assert-LiteralCount $deployCompose 'Jwt__PublicKeyBase64:' 2 'deploy Gateway/Upload JWT public key'
+Assert-LiteralCount $deployCompose 'pull_policy: always' 10 'prebuilt application image pull policy'
+Assert-DoesNotContainLiteral $deployCompose '    build:' 'source build in the GHCR deployment compose'
+Assert-DoesNotContainLiteral $deployCompose 'dockerfile:' 'Dockerfile reference in the GHCR deployment compose'
+Assert-DoesNotContainLiteral $deployCompose 'Jwt__SigningKey:' 'deploy legacy fleet-wide JWT signer'
+Assert-DoesNotContainLiteral $deployCompose ('Username=$' + '{DB_USER}') 'deploy migration owner in runtime connection strings'
+Assert-DoesNotContainLiteral $deployCompose ('Password=$' + '{DB_PASSWORD}') 'deploy migration owner in runtime connection strings'
+Assert-ContainsLiteral $deployCompose '${EDGE_BIND_ADDRESS:-127.0.0.1}:${EDGE_PORT:-8080}:80' 'loopback-safe deploy edge binding'
+foreach ($image in @(
+    'ghcr.io/fakebook-works/backend-authentication:',
+    'ghcr.io/fakebook-works/backend-socialgraph:',
+    'ghcr.io/fakebook-works/backend-recommendation:',
+    'ghcr.io/fakebook-works/backend-search:',
+    'ghcr.io/fakebook-works/backend-notification:',
+    'ghcr.io/fakebook-works/backend-messaging:',
+    'ghcr.io/fakebook-works/backend-payment:',
+    'ghcr.io/fakebook-works/api-gateway:',
+    'ghcr.io/fakebook-works/upload-server:',
+    'ghcr.io/fakebook-works/frontend:'
+)) {
+    Assert-ContainsLiteral $deployCompose $image "GHCR image $image"
+}
+
 $gatewayProgram = Read-WorkspaceText 'APIGateway\API-Gateway\fakebookGateway\Program.cs'
 foreach ($contract in @(
     'AddMaxExecutionDepthRule',

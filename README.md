@@ -62,8 +62,9 @@ JWT, or existing secret values:
 
 ## Repository layout
 
-This repository holds the orchestration layer only: `docker-compose.yml`, `scripts/`,
-`docs/`, `.env.example` and this README. Each service lives in its own repository under
+This repository holds the orchestration layer only: the local-build `docker-compose.yml`,
+the GHCR deployment sample `docker-compose.yaml`, `scripts/`, `docs/`, `.env.example`
+and this README. Each service lives in its own repository under
 `github.com/fakebook-works/` and is cloned into the folder named in the topology table
 above; those folders are ignored here so the two histories never mix.
 
@@ -95,6 +96,27 @@ is installed or changed by this command):
 When Docker is available the script also runs Payment Testcontainers. Without a daemon,
 it still validates Compose with the checksum-verified standalone binary and reports the
 skipped Payment container integration suite explicitly.
+
+## Deploy prebuilt GHCR images on Linux
+
+`docker-compose.yaml` pulls all ten Fakebook application images from
+`ghcr.io/fakebook-works`, plus Redis, OpenTelemetry Collector and the Alpine nginx edge.
+Only the edge is published; subgraphs, Upload Server and frontend stay on the private
+Compose network. `FAKEBOOK_IMAGE_TAG` defaults to `main` for the sample and should be
+pinned to a verified immutable release/commit tag in production.
+
+Copy `.env.example` to `.env`, replace every `replace-*`/`generate-*` value, and configure
+the external PostgreSQL schemas and least-privilege roles described under
+**Databases & Redis**. If the GHCR packages are private, authenticate the server once with
+`docker login ghcr.io`. The complete application stack is then started with one command:
+
+```bash
+docker compose -f docker-compose.yaml up -d
+```
+
+The secure default binds the edge to `127.0.0.1:${EDGE_PORT}` for Tailscale Serve or a
+same-host TLS reverse proxy. Do not publish plain HTTP directly; set
+`EDGE_BIND_ADDRESS` only as part of a reviewed TLS/firewall deployment.
 
 ## Run without Docker
 
@@ -135,11 +157,19 @@ The runtime contract is:
   upload is deleted only after its final content/profile/message parent is removed.
 - Only public feed posts and reels are shareable. Feed share wrappers remain present
   when their source is deleted or becomes private and render an unavailable-source state.
+- Reels use the same four privacy values as feed posts. Their selected presentation ratio
+  (`9/16..16/9`) and normalized focal point are persisted as non-destructive crop metadata,
+  so Home and Reel views reproduce the creator's framing without re-encoding the source video.
 - User/group photo galleries and existing-photo pickers are context-scoped and paged.
-  Avatar/cover crops are separate assets; original uploads create activity posts.
+  Avatar/cover crops are separate assets. A newly uploaded avatar original creates the
+  public activity `đã cập nhật ảnh đại diện`; a newly uploaded cover original creates
+  `tôi đã cập nhật ảnh bìa của mình`. Existing-photo selections create no duplicate activity.
 - Messenger creates direct conversations idempotently on the server, exposes Message on
   friend profiles, supports the topbar overlay and at most three floating chat windows.
-  Message attachments are finalized/deleted through Messenger's retrying outbox.
+  Message attachments are finalized/deleted through Messenger's retrying outbox. Group
+  membership, role, title and photo changes append server-only structured system messages;
+  sender receipts advance with sends, while delivered and read remain separate client
+  acknowledgements.
 - Notification has durable realtime delivery retry, server-side unread filtering,
   unread badges, mark-one/mark-all, pagination and object deep-links.
 - Search returns authorization-filtered SocialGraph references. Fusion hydrates people,
@@ -147,6 +177,8 @@ The runtime contract is:
   fanout and orphan-token cleanup reduce database work.
 - Uploads begin as pending assets. Domain services finalize them only after a successful
   mutation; abandoned assets expire and partial frontend upload batches are cancelled.
+- Video uploads accept at most 500 MiB; the multipart request cap is 502 MiB to reserve
+  framing overhead. Images, audio and documents retain the separate 25 MiB file cap.
 - Idle SocialGraph, Notification and Messenger outbox workers use bounded exponential
   polling backoff, and routine EF command logging is suppressed. This keeps realtime
   latency low after activity without continuously loading the external PostgreSQL host.
@@ -244,7 +276,7 @@ nonce store. Never write real credentials into docs or source control.
 - **SocialGraph → Recommendation** — create/delete user vectors and post/reel vectors.
 - **SocialGraph → Search** — create/update/delete user/group/post/reel indexes.
 - **SocialGraph → Notification** — create notifications.
-- **SocialGraph → Authentication** — create/delete users.
+- **SocialGraph → Authentication** — create/delete users and read the minimal active-account contact email through signed internal REST for an already authorized profile view.
 - **SocialGraph → Messenger** — create/delete users.
 - **Recommendation → SocialGraph** — fetch candidate post/reel ids.
 - **Messenger → SocialGraph** — read friend/block relationships.
@@ -262,7 +294,7 @@ nonce store. Never write real credentials into docs or source control.
 
 ## Frontend — the remaining work
 
-The API surface is mature (~68 queries, ~78 mutations, 4 subscriptions), so frontend work
+The API surface is mature (~68 queries, ~79 mutations, 4 subscriptions), so frontend work
 does not require backend changes. Start here:
 
 - Code lives in `Frontend/Frontend` (Vite + React + TypeScript). See its own `README.md`

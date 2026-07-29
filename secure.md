@@ -1,6 +1,6 @@
 # Báo cáo bảo mật hệ thống Fakebook
 
-**Ngày chốt kiểm tra:** 27/07/2026
+**Ngày chốt kiểm tra:** 29/07/2026
 
 **Phạm vi:** workspace điều phối, Gateway, 7 subgraph, Upload Server, Recommendation Python và frontend
 **Mục tiêu:** hoàn tất giai đoạn 3 đang dở, kiểm tra lại hai giai đoạn Claude Code đã push, và tạo một mốc đủ rõ để nhóm quay lại tập trung frontend.
@@ -97,6 +97,26 @@ hiển thị/tương tác giữa hai người bị loại. Kernel này được 
 
 Block không bị privacy, friendship, follow, tag hay mention ghi đè. Tag/mention không cấp
 quyền đọc nội dung.
+
+### 3.2.1. Đọc dữ liệu profile người khác
+
+Hai API bổ sung để hiển thị profile người khác vẫn dùng cùng security kernel, không tạo đường tắt mới:
+
+- `profileFriends(targetUserId, limit)` lấy viewer từ trusted Gateway context; input chỉ là target resource, kiểm tra block hai chiều với target và lọc block hai chiều trên từng friend; giới hạn public tối đa 200.
+- `profileContact(userId)` chỉ chạy sau xác thực, kiểm tra canonical SocialGraph profile và block hai chiều. SocialGraph gọi Auth qua signed internal REST có timestamp/nonce Redis fail-closed; Auth chỉ trả `{ userId, email }` cho account active.
+- Browser vẫn chỉ gọi Gateway GraphQL. Không service secret, credential, password hash, OTP, token hay session data nào được đưa vào schema public.
+- Negative tests xác nhận untrusted caller bị từ chối, target bị block hoặc không tồn tại không gọi Auth, account chưa active không lộ email, và friend bị block ở cả hai hướng không xuất hiện.
+
+### 3.2.2. Unified profile post stream
+
+`profilePosts(userId, cursor, limit)` now returns both visible FeedPost and Reel items for
+the profile All tab. The supplied user ID remains a target resource only: the viewer is
+derived from `ITrustedCallerAccessor`, a two-way block is checked before hydration, and
+every item still passes through `ContentGraphService.GetPostDetailsAsync`, which enforces
+current privacy values 0/1/2/3, deletion state and block visibility. `profileReels`
+remains the Reel-only collection for the dedicated tab. Regression coverage includes an
+untrusted caller, a blocked target and a mixed page whose hidden item is omitted by the
+visibility service.
 
 ### 3.3. Đăng ký không còn half-commit
 
@@ -224,6 +244,21 @@ sớm khi CPU work còn chạy. Work factor do server cấu hình và validate 1
 - Redis và OpenTelemetry Collector image được pin digest.
 - Secret scan không thấy giá trị thật trong file repository.
 
+### 5.5.1. Avatar source provenance — fixed
+
+- `User.data.avatar` remains a clean cropped-image URL. The optional `avatarSource` object stores
+  `contentId` and `mediaId` as decimal Snowflake strings, so IDs are not rounded in JavaScript and
+  no metadata is embedded into a media URL.
+- Provenance is written only after trusted-actor, upload ownership, source ownership, FeedPost,
+  Contained media and Photo-type validation. A partial pair, foreign post, mismatched media or
+  non-photo source is rejected before the profile write.
+- Provenance never grants access. `profileAvatarSource` reapplies two-way block and the normal
+  post-detail privacy/deletion visibility path, then rechecks owner and media membership. Failure
+  returns no source without exposing why; the clean avatar can still be viewed independently.
+- Legacy profiles without `avatarSource` remain valid. Removing or replacing an avatar clears old
+  provenance atomically. The browser continues to use Gateway GraphQL and no schema/table migration
+  or direct subgraph route was added.
+
 ### 5.6. Sổ kiểm kê đầy đủ các bản vá bảo mật và hardening
 
 Bảng này bổ sung những thay đổi trước đây chỉ được nhắc gián tiếp. Nó được đối chiếu với
@@ -238,6 +273,7 @@ availability/defense-in-depth để báo cáo không đánh đồng mọi tối 
 | Gateway GraphQL | Query sâu/rộng/cycle/planner expansion và batching gây amplification | Vulnerability/DoS | parser/depth/cycle/planner/concurrency/timeout limits; 05c729d |
 | Gateway GraphQL | Raw refresh token lọt qua composed response | Vulnerability | field internal, response scrub và cookie instruction; c269496 |
 | Browser cookie | Refresh cookie bị gửi tới /media và path không đồng bộ | Vulnerability | cookie path chỉ /graphql; e0f7505, 0bf6bc1 |
+| Browser session | Cookie legacy Path=/ cùng tên che cookie Path=/graphql mới, làm refresh dùng session cũ và đá người dùng sau 15 phút | Availability/session integrity | Gateway lấy cookie path cụ thể theo thứ tự RFC, tự xoá cookie root legacy khi SET/CLEAR; host launcher dùng Secure=false chỉ trên HTTP localhost; frontend chỉ xoá phiên khi Auth từ chối dứt khoát và khoá refresh liên tab; regression tests ngày 27/07/2026 |
 | PayOS webhook | Body lớn, spoofed browser context hoặc thay đổi bytes khi proxy | Vulnerability | JSON/body cap, IP rate-limit, exact bytes, không forward cookie/auth/trusted header; 08a0c76 |
 | Edge headers | Clickjacking, MIME sniffing và thiếu transport/browser policy | Defense-in-depth | frame/nosniff/referrer/permissions/HSTS; workspace phase 1/2 |
 | Secret isolation | Một shared-secret fallback làm compromise một service lan cả fleet | Vulnerability | secret riêng từng subgraph/REST target, Production/env validation chặn trùng/fallback; 9565eec, 0716985 |
@@ -304,21 +340,27 @@ tests và review data flow trước merge.
 
 | Thành phần | Kết quả |
 | --- | ---: |
-| Authentication | 35/35 |
-| SocialGraph | 221/221 |
+| Authentication | 41/41 |
+| SocialGraph | 254/254 |
 | Search | 34/34 |
 | Notification | 29/29 |
-| Messenger | 61/61 |
+| Messenger | 78/78 |
 | Payment unit | 35/35 |
-| Upload | 19/19 |
-| Gateway | 35/35 |
-| Recommendation Python | 54/54 |
-| Frontend Vitest | 293/293 |
+| Payment Testcontainers | skipped on 29/07/2026 (Docker unavailable) |
+| Upload | 22/22 |
+| Gateway | 38/38 |
+| Recommendation Python | 55/55 |
+| Frontend Vitest | 358/358 |
 | Frontend build/lint | pass |
 | API security contract guard | pass |
 | Compose standalone validation | pass |
 
-Tổng: **523 backend/Python test + 293 frontend test = 816 test pass**.
+Tổng: **586 backend/Python test + 358 frontend test = 944 test pass**.
+
+Ngày 29/07/2026, sau thay đổi `avatarSource` và luồng `profilePosts` hợp nhất FeedPost/Reel, `check-api-security-contracts.ps1` và
+`test-all.ps1` đều exit 0; SocialGraph/Fusion schema được export/compose lại. Payment
+Testcontainers không chạy vì máy host không có Docker và được ghi là skipped, không tính vào
+con số pass ở trên.
 
 ### 6.2. Full-stack smoke
 
@@ -326,7 +368,7 @@ Host launcher đã chạy đồng thời security cache; Auth 1001, Social 1002,
 1003, Search 1004, Notification 1005, Messenger 1006, Payment 1007, Gateway 2001,
 Frontend 3001 và Upload 4001. Readiness từng service, Gateway GraphQL, Search/Gateway,
 frontend/upload và kiểm tra Messenger từ chối request không trusted đều pass. Stack đã
-được stop sạch sau test.
+được restart với binary/schema mới và `smoke-local.ps1` pass toàn bộ ngày 29/07/2026.
 
 ### 6.3. Database invariant
 
@@ -347,6 +389,30 @@ dashboard sạch tuyệt đối.
 Payment Testcontainers chưa chạy trên workstation vì không có Docker daemon. Unit test,
 host full-stack smoke và docker-compose config vẫn pass; CI có Docker cần tiếp tục chạy
 suite integration này.
+
+### 6.5. Bổ sung kiểm chứng vòng đời phiên trình duyệt ngày 27/07/2026
+
+Log runtime xác nhận access token 15 phút hết hạn đúng thiết kế, nhưng Gateway đã forward
+refresh token của một session cũ dù người dùng vừa tạo session mới. Nguyên nhân là trình duyệt
+còn đồng thời hai cookie `fb_refresh`: bản legacy `Path=/` và bản mới `Path=/graphql`.
+`Request.Cookies` gộp tên trùng và có thể giữ bản root ở cuối header.
+
+Bản vá không kéo dài thời hạn bảo mật và không bỏ rotation:
+
+1. Gateway đọc cookie cùng tên đầu tiên trong raw header; theo thứ tự RFC đây là cookie có path
+   dài/cụ thể hơn, sau đó mới fallback sang parser chuẩn;
+2. mọi cookie instruction SET/CLEAR ở `/graphql` đồng thời xoá cookie legacy tại `/`;
+3. host launcher HTTP localhost đặt `Secure=false`; Docker/Tailscale production vẫn giữ
+   `Secure=true`, `HttpOnly=true`, `SameSite=Lax`;
+4. frontend dùng một refresh promise trong tab và Web Lock giữa các tab để không xoay cùng một
+   refresh token hai lần; SSE gặp 401 cũng đi qua cùng cơ chế rồi kết nối lại;
+5. timeout, 429, Gateway 5xx hoặc mất mạng không còn tự xoá identity trong local storage.
+   Chỉ `INVALID_REFRESH_TOKEN`, reuse detection, account unavailable/unverified hoặc 401 xác
+   nhận từ Auth mới kết thúc phiên.
+
+Không đổi DB và không hạ `AccessTokenMinutes=15`, refresh sliding 30 ngày hay absolute session
+90 ngày. Gateway regression suite kiểm tra duplicate-cookie + cleanup; frontend kiểm tra refresh
+thành công, lỗi tạm thời, từ chối dứt khoát, phối hợp liên tab và SSE 401.
 
 ## 7. Thay đổi dữ liệu và secret
 
