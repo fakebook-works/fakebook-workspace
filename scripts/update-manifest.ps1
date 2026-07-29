@@ -4,7 +4,7 @@
 
 .DESCRIPTION
     The services live in their own repositories, so this repository on its own cannot say
-    which build of each service a given docker-compose.yml was verified against. Running
+    which build of each service a given docker-compose.yaml was verified against. Running
     this after a known-good verification captures that pairing, which is what makes a
     deployment reproducible later.
 

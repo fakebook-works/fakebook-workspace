@@ -115,9 +115,7 @@ if ($docker) {
         & $dotnet test .\fakebookPayment.sln
     }
     Invoke-FakebookCheck 'Docker Compose validation' $root {
-        docker compose -f .\docker-compose.yml config --quiet
-        if ($LASTEXITCODE -ne 0) { return }
-        docker compose -f .\docker-compose.yaml config --quiet
+        docker compose --env-file .\.env.example -f .\docker-compose.yaml config --quiet
     }
 }
 elseif ($RequireDocker) {
@@ -129,9 +127,7 @@ else {
     $standaloneCompose = "$root\.tools\docker-compose.exe"
     if (Test-Path -LiteralPath $standaloneCompose) {
         Invoke-FakebookCheck 'Docker Compose validation (standalone)' $root {
-            & $standaloneCompose -f .\docker-compose.yml config --quiet
-            if ($LASTEXITCODE -ne 0) { return }
-            & $standaloneCompose -f .\docker-compose.yaml config --quiet
+            & $standaloneCompose --env-file .\.env.example -f .\docker-compose.yaml config --quiet
         }
     }
     else {

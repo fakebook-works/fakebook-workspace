@@ -106,17 +106,6 @@ foreach ($contract in @('nx=True', 'ex=retention', 'UNAVAILABLE = "unavailable"'
 $pythonApi = Read-WorkspaceText 'RecommendationService\Backend-Recommendation\ForFakebook\EmbeddingModel.py'
 Assert-ContainsLiteral $pythonApi 'INTERNAL_REPLAY_PROTECTION_UNAVAILABLE' 'Python fail-closed replay response'
 
-$compose = Read-WorkspaceText 'docker-compose.yml'
-Assert-LiteralCount $compose 'InternalAuth__RequireSignature: "true"' 7 'managed signature enforcement'
-Assert-LiteralCount $compose 'InternalAuth__SendLegacySecret: "false"' 7 'legacy-secret transmission disablement'
-Assert-LiteralCount $compose 'ConnectionStrings__SecurityRedis: redis:6379' 6 '.NET security Redis wiring'
-Assert-LiteralCount $compose 'SECURITY_REDIS_URL: redis://redis:6379/0' 1 'Python security Redis wiring'
-Assert-LiteralCount $compose 'Jwt__PrivateKeyBase64:' 1 'Auth-only JWT private key'
-Assert-LiteralCount $compose 'Jwt__PublicKeyBase64:' 2 'Gateway/Upload JWT public key'
-Assert-DoesNotContainLiteral $compose 'Jwt__SigningKey:' 'legacy fleet-wide JWT signer'
-Assert-DoesNotContainLiteral $compose ('Username=$' + '{DB_USER}') 'migration owner in runtime connection strings'
-Assert-DoesNotContainLiteral $compose ('Password=$' + '{DB_PASSWORD}') 'migration owner in runtime connection strings'
-
 $deployCompose = Read-WorkspaceText 'docker-compose.yaml'
 Assert-LiteralCount $deployCompose 'InternalAuth__RequireSignature: "true"' 7 'deploy signature enforcement'
 Assert-LiteralCount $deployCompose 'InternalAuth__SendLegacySecret: "false"' 7 'deploy legacy-secret transmission disablement'
@@ -130,6 +119,10 @@ Assert-DoesNotContainLiteral $deployCompose 'dockerfile:' 'Dockerfile reference 
 Assert-DoesNotContainLiteral $deployCompose 'Jwt__SigningKey:' 'deploy legacy fleet-wide JWT signer'
 Assert-DoesNotContainLiteral $deployCompose ('Username=$' + '{DB_USER}') 'deploy migration owner in runtime connection strings'
 Assert-DoesNotContainLiteral $deployCompose ('Password=$' + '{DB_PASSWORD}') 'deploy migration owner in runtime connection strings'
+Assert-DoesNotContainLiteral $deployCompose 'TAILSCALE_ORIGIN' 'development-only Tailscale origin in deploy configuration'
+Assert-DoesNotContainLiteral $deployCompose 'Tailscale' 'development-only Tailscale documentation in deploy configuration'
+Assert-DoesNotContainLiteral $deployCompose 'tailnet' 'development-only tailnet documentation in deploy configuration'
+Assert-ContainsLiteral $deployCompose '${PUBLIC_ORIGIN:?Set PUBLIC_ORIGIN in .env}' 'operator-managed HTTPS deploy origin'
 Assert-ContainsLiteral $deployCompose '${EDGE_BIND_ADDRESS:-127.0.0.1}:${EDGE_PORT:-8080}:80' 'loopback-safe deploy edge binding'
 foreach ($image in @(
     'ghcr.io/fakebook-works/backend-authentication:',

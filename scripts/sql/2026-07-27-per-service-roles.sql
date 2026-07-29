@@ -192,11 +192,9 @@ COMMIT;
 --
 -- DEPLOYMENT
 --
--- docker-compose.yml builds every connection string from the shared DB_USER/DB_PASSWORD in
--- the x-postgres-base anchor. Give each service its own pair instead — for example
--- AUTH_DB_USER/AUTH_DB_PASSWORD — and change that service's connection string to use them.
--- The Recommendation service builds a DATABASE_URL rather than a connection string, so it
--- needs the same treatment in that form.
+-- docker-compose.yaml builds every runtime connection from its schema-scoped service
+-- credential pair (for example AUTH_DB_USER/AUTH_DB_PASSWORD). DB_USER/DB_PASSWORD remain
+-- migration-owner credentials and are never injected into an application container.
 --
 -- Migrations must keep running as `fakebook`, which owns the schemas;
 -- scripts/apply-migrations.ps1 reads DB_USER/DB_PASSWORD and so continues to work.

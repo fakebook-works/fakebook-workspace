@@ -855,7 +855,7 @@ static string FindWorkspaceRoot(string start)
     var current = new DirectoryInfo(start);
     while (current is not null)
     {
-        if (File.Exists(Path.Combine(current.FullName, "docker-compose.yml"))) return current.FullName;
+        if (File.Exists(Path.Combine(current.FullName, "docker-compose.yaml"))) return current.FullName;
         current = current.Parent;
     }
     Fail("Could not locate the Fakebook workspace root.");

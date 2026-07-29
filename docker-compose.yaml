@@ -298,8 +298,8 @@ services:
       ASPNETCORE_URLS: http://+:1007
       ConnectionStrings__PaymentDatabase: Host=${DB_HOST};Port=${DB_PORT};Database=${DB_NAME};Username=${PAYMENT_DB_USER:?Set PAYMENT_DB_USER in .env};Password=${PAYMENT_DB_PASSWORD:?Set PAYMENT_DB_PASSWORD in .env};Search Path=payment;Timeout=10;Command Timeout=30
       Database__ApplySchemaOnStartup: "false"
-      Payment__PublicBaseUrl: ${TAILSCALE_ORIGIN:?Set TAILSCALE_ORIGIN in .env}
-      Payment__FrontendPublicUrl: ${TAILSCALE_ORIGIN}
+      Payment__PublicBaseUrl: ${PUBLIC_ORIGIN:?Set PUBLIC_ORIGIN in .env}
+      Payment__FrontendPublicUrl: ${PUBLIC_ORIGIN}
       Payment__PaymentsEnabled: ${PAYMENTS_ENABLED:-false}
       Payment__CheckoutTtlMinutes: 30
       Payment__WorkerId: 7
@@ -351,10 +351,7 @@ services:
       Gateway__TrustedProxyNetworks__2: 172.16.0.0/12
       Gateway__SessionCacheSeconds: 30
       Gateway__RefreshTokenCookieName: fb_refresh
-      Gateway__AllowedOrigins__0: ${TAILSCALE_ORIGIN}
-      Gateway__AllowedOrigins__1: ${LOCAL_FRONTEND_ORIGIN:-http://localhost:3001}
-      Gateway__AllowedOrigins__2: http://localhost:5173
-      Gateway__AllowedOrigins__3: http://localhost:3001
+      Gateway__AllowedOrigins__0: ${PUBLIC_ORIGIN}
       Subgraphs__Authentication__Url: http://authentication:1001/graphql
       Subgraphs__Payment__WebhookUrl: http://payment:1007/internal/webhooks/payos
       PaymentGateway__TimeoutSeconds: 10
@@ -397,10 +394,7 @@ services:
       Jwt__KeyId: ${JWT_KEY_ID:?Set JWT_KEY_ID in .env}
       Jwt__LegacySigningKey: ${JWT_LEGACY_SIGNING_KEY:-}
       AuthService__Url: http://authentication:1001/graphql
-      Cors__AllowedOrigins__0: ${TAILSCALE_ORIGIN}
-      Cors__AllowedOrigins__1: ${LOCAL_FRONTEND_ORIGIN:-http://localhost:3001}
-      Cors__AllowedOrigins__2: http://localhost:5173
-      Cors__AllowedOrigins__3: http://localhost:3001
+      Cors__AllowedOrigins__0: ${PUBLIC_ORIGIN}
       UploadStorage__RootPath: /data/media
       UploadStorage__StagedUploadsEnabled: "true"
       UploadStorage__PendingLifetimeMinutes: 1440
@@ -461,11 +455,11 @@ services:
 configs:
   edge-nginx:
     content: |
-      # Traffic reaches this container through Tailscale Serve and the Docker port
-      # publisher, so $$remote_addr is always the docker-proxy address. Without
+      # Traffic reaches this container through the operator-managed reverse proxy and
+      # Docker port publisher, so $$remote_addr is normally the docker-proxy address. Without
       # real_ip every "per IP" zone below collapses into a single global bucket and
-      # one client can rate-limit the entire deployment. Only the loopback and
-      # Docker bridge ranges are trusted; the tailnet range deliberately is not, so
+      # one client can rate-limit the entire deployment. Only loopback and private
+      # Docker bridge ranges are trusted; arbitrary external client networks are not, so
       # a client cannot promote a forged X-Forwarded-For entry into $$remote_addr.
       set_real_ip_from 127.0.0.1;
       set_real_ip_from 172.16.0.0/12;

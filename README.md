@@ -30,7 +30,7 @@ Tailscale Serve at `127.0.0.1:${EDGE_PORT}`; host mode points it at the Vite edg
 Copy variable names from `.env.example`. Environment variables override appsettings.
 Use a distinct Gateway-to-subgraph secret and a distinct target-service REST secret.
 Managed startup fails closed when any dedicated key is missing, short, or duplicated;
-`docker-compose.yml` no longer falls back to `GATEWAY_SHARED_SECRET`.
+`docker-compose.yaml` does not fall back to `GATEWAY_SHARED_SECRET`.
 
 Initialize any missing local per-service secrets without changing database, SMTP, PayOS,
 JWT, or existing secret values:
@@ -62,9 +62,8 @@ JWT, or existing secret values:
 
 ## Repository layout
 
-This repository holds the orchestration layer only: the local-build `docker-compose.yml`,
-the GHCR deployment sample `docker-compose.yaml`, `scripts/`, `docs/`, `.env.example`
-and this README. Each service lives in its own repository under
+This repository holds the orchestration layer only: `docker-compose.yaml`, `scripts/`,
+`docs/`, `.env.example` and this README. Each service lives in its own repository under
 `github.com/fakebook-works/` and is cloned into the folder named in the topology table
 above; those folders are ignored here so the two histories never mix.
 
@@ -111,12 +110,13 @@ the external PostgreSQL schemas and least-privilege roles described under
 `docker login ghcr.io`. The complete application stack is then started with one command:
 
 ```bash
-docker compose -f docker-compose.yaml up -d
+docker compose up -d
 ```
 
-The secure default binds the edge to `127.0.0.1:${EDGE_PORT}` for Tailscale Serve or a
-same-host TLS reverse proxy. Do not publish plain HTTP directly; set
-`EDGE_BIND_ADDRESS` only as part of a reviewed TLS/firewall deployment.
+Set `PUBLIC_ORIGIN` to the HTTPS origin exposed by your own nginx/reverse proxy. The
+secure default binds the Compose edge to `127.0.0.1:${EDGE_PORT}` so it can be forwarded
+from that proxy without exposing backend HTTP directly. Set `EDGE_BIND_ADDRESS` only as
+part of a reviewed TLS/firewall deployment.
 
 ## Run without Docker
 

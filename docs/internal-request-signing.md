@@ -115,7 +115,7 @@ SECURITY_REDIS_URL=redis://redis:6379/0
 
 Bare service runs default to migration-compatible mode
 (`RequireSignature=false`, `SendLegacySecret=true`). Both
-`docker-compose.yml` and `scripts/start-local.ps1` enable enforcement for
+`docker-compose.yaml` and `scripts/start-local.ps1` enable enforcement for
 the whole fleet atomically.
 
 ## Covered calls
