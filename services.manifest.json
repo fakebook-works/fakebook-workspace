@@ -1,5 +1,5 @@
 {
-    "generatedAtUtc":  "2026-07-29T10:45:30Z",
+    "generatedAtUtc":  "2026-07-29T10:51:57Z",
     "services":  {
                      "APIGateway":  {
                                         "path":  "APIGateway/API-Gateway",
@@ -26,7 +26,7 @@
                                             "path":  "RecommendationService/Backend-Recommendation",
                                             "remote":  "https://github.com/fakebook-works/Backend-Recommendation.git",
                                             "branch":  "main",
-                                            "commit":  "71014b2981739b92c80171d50a3e53c00b636226",
+                                            "commit":  "a878aee70b594d831419d7b090e07f06607ed070",
                                             "clean":  true
                                         },
                      "Search":  {
@@ -68,7 +68,7 @@
                                       "path":  "Frontend/Frontend",
                                       "remote":  "https://github.com/fakebook-works/Frontend.git",
                                       "branch":  "main",
-                                      "commit":  "cd0576155cd0b732403297c5cc609fabf406e16f",
+                                      "commit":  "8d82fb87486b0260d12d57784616cae8c2955e9d",
                                       "clean":  true
                                   }
                  }
