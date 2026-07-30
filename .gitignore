@@ -1,6 +1,12 @@
 # Real secrets. Copy .env.example to .env and fill it in locally.
 .env
 
+# Server deployment diagnostics may contain live credentials and operational data.
+# Keep the reviewed compose/config files trackable, but never commit these inputs.
+/fixdeploy/envfile
+/fixdeploy/server.log
+/fixdeploy/fakebook-*/
+
 # Host-mode runtime state: PIDs, logs, exported schemas, scratch build output.
 .run/
 
