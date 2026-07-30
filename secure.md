@@ -404,6 +404,10 @@ con số pass ở trên.
 
 Cùng ngày, sau hardening runtime Fusion endpoint và tắt Nitro ngoài Development, Gateway
 53/53 test pass; cả hai Compose topology được standalone validator kiểm tra thành công.
+GitHub Actions run `30529490618` của Gateway commit
+`a1fb1511048a7ebe88a71b19b30dd2230ee80895` hoàn tất cả job test và build/push đa kiến
+trúc. Image `ghcr.io/fakebook-works/api-gateway:main` được publish với manifest digest
+`sha256:7e2fb2d8e85b575052642ba089ecae24c7ed500556cdef5430a38feae2158650`.
 
 ### 6.2. Full-stack smoke
 
