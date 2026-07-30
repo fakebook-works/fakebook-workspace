@@ -41,6 +41,12 @@ Gateway must continue to enforce query parser, depth, field-cycle, planner, exec
 timeout/concurrency and request-rate limits. Do not bypass Fusion by proxying arbitrary
 GraphQL documents to a subgraph.
 
+The Nitro browser IDE on `/graphql` is Development-only. Production must keep normal
+GraphQL HTTP/SSE application traffic working while returning no Nitro HTML. Fusion
+subgraph destinations come only from startup-validated `Subgraphs:<Name>:Url`
+configuration: defaults use canonical loopback ports and deployment Compose may override
+them for its reviewed network topology. Never derive a transport URL from a browser input.
+
 ## 3. Identity and trusted headers
 
 Never authorize from a userId, sessionId, role, ownerId or admin flag supplied in GraphQL

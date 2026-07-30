@@ -118,6 +118,14 @@ secure default binds the Compose edge to `127.0.0.1:${EDGE_PORT}` so it can be f
 from that proxy without exposing backend HTTP directly. Set `EDGE_BIND_ADDRESS` only as
 part of a reviewed TLS/firewall deployment.
 
+The Gateway Fusion archive and application defaults use `127.0.0.1:1001..1007`. The root
+Compose topology uses separate network namespaces, so it maps all seven validated
+`Subgraphs__<Name>__Url` settings from the `GATEWAY_*_SUBGRAPH_URL` variables and defaults
+them to Compose service DNS. A shared-network-namespace deployment can keep the loopback
+defaults. These values change routing at runtime without rebuilding the image or
+recomposing `gateway.far`. Nitro is available at `/graphql` only in Development;
+Production continues serving GraphQL HTTP/SSE but not the browser IDE.
+
 ## Run without Docker
 
 The repository also includes a host-mode launcher for this workstation. It builds and

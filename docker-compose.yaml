@@ -352,8 +352,17 @@ services:
       Gateway__SessionCacheSeconds: 30
       Gateway__RefreshTokenCookieName: fb_refresh
       Gateway__AllowedOrigins__0: ${PUBLIC_ORIGIN}
-      Subgraphs__Authentication__Url: http://authentication:1001/graphql
-      Subgraphs__Payment__WebhookUrl: http://payment:1007/internal/webhooks/payos
+      # Fusion archives default to loopback. This bridge-network sample explicitly
+      # overrides every runtime transport with service DNS; operators may replace any
+      # endpoint without rebuilding the Gateway image or recomposing gateway.far.
+      Subgraphs__Authentication__Url: ${GATEWAY_AUTHENTICATION_SUBGRAPH_URL:-http://authentication:1001/graphql}
+      Subgraphs__SocialGraph__Url: ${GATEWAY_SOCIALGRAPH_SUBGRAPH_URL:-http://social-graph:1002/graphql}
+      Subgraphs__Recommendation__Url: ${GATEWAY_RECOMMENDATION_SUBGRAPH_URL:-http://recommendation:1003/graphql}
+      Subgraphs__Search__Url: ${GATEWAY_SEARCH_SUBGRAPH_URL:-http://search:1004/graphql}
+      Subgraphs__Notification__Url: ${GATEWAY_NOTIFICATION_SUBGRAPH_URL:-http://notification:1005/graphql}
+      Subgraphs__Messaging__Url: ${GATEWAY_MESSAGING_SUBGRAPH_URL:-http://messaging:1006/graphql}
+      Subgraphs__Payment__Url: ${GATEWAY_PAYMENT_SUBGRAPH_URL:-http://payment:1007/graphql}
+      Subgraphs__Payment__WebhookUrl: ${GATEWAY_PAYMENT_WEBHOOK_URL:-http://payment:1007/internal/webhooks/payos}
       PaymentGateway__TimeoutSeconds: 10
       PaymentGateway__WebhookPermitLimit: 60
       PaymentGateway__WebhookWindowSeconds: 60

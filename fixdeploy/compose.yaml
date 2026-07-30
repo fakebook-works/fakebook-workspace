@@ -474,8 +474,16 @@ services:
       Gateway__SessionCacheSeconds: 30
       Gateway__RefreshTokenCookieName: fb_refresh
       Gateway__AllowedOrigins__0: ${PUBLIC_ORIGIN}
-      Subgraphs__Authentication__Url: http://127.0.0.1:1001/graphql
-      Subgraphs__Payment__WebhookUrl: http://127.0.0.1:1007/internal/webhooks/payos
+      # Every application container shares this network namespace, so loopback is the
+      # canonical default. Each endpoint can still be overridden from envfile.
+      Subgraphs__Authentication__Url: ${GATEWAY_AUTHENTICATION_SUBGRAPH_URL:-http://127.0.0.1:1001/graphql}
+      Subgraphs__SocialGraph__Url: ${GATEWAY_SOCIALGRAPH_SUBGRAPH_URL:-http://127.0.0.1:1002/graphql}
+      Subgraphs__Recommendation__Url: ${GATEWAY_RECOMMENDATION_SUBGRAPH_URL:-http://127.0.0.1:1003/graphql}
+      Subgraphs__Search__Url: ${GATEWAY_SEARCH_SUBGRAPH_URL:-http://127.0.0.1:1004/graphql}
+      Subgraphs__Notification__Url: ${GATEWAY_NOTIFICATION_SUBGRAPH_URL:-http://127.0.0.1:1005/graphql}
+      Subgraphs__Messaging__Url: ${GATEWAY_MESSAGING_SUBGRAPH_URL:-http://127.0.0.1:1006/graphql}
+      Subgraphs__Payment__Url: ${GATEWAY_PAYMENT_SUBGRAPH_URL:-http://127.0.0.1:1007/graphql}
+      Subgraphs__Payment__WebhookUrl: ${GATEWAY_PAYMENT_WEBHOOK_URL:-http://127.0.0.1:1007/internal/webhooks/payos}
       PaymentGateway__TimeoutSeconds: 10
       PaymentGateway__WebhookPermitLimit: 60
       PaymentGateway__WebhookWindowSeconds: 60

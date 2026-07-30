@@ -124,6 +124,17 @@ Assert-DoesNotContainLiteral $deployCompose 'Tailscale' 'development-only Tailsc
 Assert-DoesNotContainLiteral $deployCompose 'tailnet' 'development-only tailnet documentation in deploy configuration'
 Assert-ContainsLiteral $deployCompose '${PUBLIC_ORIGIN:?Set PUBLIC_ORIGIN in .env}' 'operator-managed HTTPS deploy origin'
 Assert-ContainsLiteral $deployCompose '${EDGE_BIND_ADDRESS:-127.0.0.1}:${EDGE_PORT:-8080}:80' 'loopback-safe deploy edge binding'
+foreach ($subgraphVariable in @(
+    'GATEWAY_AUTHENTICATION_SUBGRAPH_URL',
+    'GATEWAY_SOCIALGRAPH_SUBGRAPH_URL',
+    'GATEWAY_RECOMMENDATION_SUBGRAPH_URL',
+    'GATEWAY_SEARCH_SUBGRAPH_URL',
+    'GATEWAY_NOTIFICATION_SUBGRAPH_URL',
+    'GATEWAY_MESSAGING_SUBGRAPH_URL',
+    'GATEWAY_PAYMENT_SUBGRAPH_URL'
+)) {
+    Assert-ContainsLiteral $deployCompose $subgraphVariable "runtime Gateway endpoint override $subgraphVariable"
+}
 foreach ($image in @(
     'ghcr.io/fakebook-works/backend-authentication:',
     'ghcr.io/fakebook-works/backend-socialgraph:',
@@ -146,9 +157,16 @@ foreach ($contract in @(
     'MaxAllowedFields',
     'MaxExpandedNodes',
     'SecurityAlgorithms.RsaSha256',
-    'ValidAlgorithms'
+    'ValidAlgorithms',
+    'options.Tool.Enable = app.Environment.IsDevelopment()'
 )) {
     Assert-ContainsLiteral $gatewayProgram $contract 'Gateway GraphQL/JWT enforcement'
+}
+$gatewayEndpointHandler = Read-WorkspaceText 'APIGateway\API-Gateway\fakebookGateway\Gateway\FusionSubgraphEndpointHandler.cs'
+Assert-ContainsLiteral $gatewayEndpointHandler 'request.RequestUri = endpoint.Uri' 'runtime Fusion endpoint override'
+$gatewayEndpointOptions = Read-WorkspaceText 'APIGateway\API-Gateway\fakebookGateway\Gateway\SubgraphEndpointsOptions.cs'
+foreach ($endpoint in 1001..1007) {
+    Assert-ContainsLiteral $gatewayEndpointOptions "http://127.0.0.1:$endpoint/graphql" "canonical loopback subgraph port $endpoint"
 }
 $gatewayEdge = Read-WorkspaceText 'APIGateway\API-Gateway\fakebookGateway\Gateway\GatewayEdgeMiddleware.cs'
 Assert-ContainsLiteral $gatewayEdge 'context.Request.Headers.Remove(header)' 'browser trusted-header stripping'

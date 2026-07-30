@@ -259,6 +259,43 @@ sớm khi CPU work còn chạy. Work factor do server cấu hình và validate 1
   provenance atomically. The browser continues to use Gateway GraphQL and no schema/table migration
   or direct subgraph route was added.
 
+### 5.5.2. Group feed/privacy boundary — verified and hardened
+
+- GroupPost không lưu privacy riêng. `GroupPostDetail.privacy` luôn được suy ra lúc đọc từ
+  Group hiện tại (`0` public, `1` private); create/update Group từ chối mọi giá trị ngoài `0/1`.
+- Candidate cho Recommendation gồm bài của nhóm viewer đang là member/admin và bài của nhóm
+  công khai dù viewer chưa tham gia. Bài nhóm riêng tư ngoài membership không được đưa vào pool;
+  block hai chiều vẫn được lọc trước ranking.
+- Fusion hydration tiếp tục gọi `ContentGraphService`, nên group privacy, membership, block và
+  trạng thái xoá được kiểm tra lại tại read time sau ranking; candidate ID không phải capability.
+- `visitedGroups` chỉ dùng trusted Gateway actor, giữ keyset pagination/ẩn private group không còn
+  quyền xem, và nay trả thêm `visitedAt` lấy từ chính cạnh `Visited(29)` để frontend hiển thị thời
+  gian tương đối. Field này không mở rộng quyền đọc hay để lộ dữ liệu của user khác.
+
+### 5.5.3. Fast-search viewer metadata — trusted projection
+
+- `UserSearchResult.viewerIsSelf/viewerIsFriend/viewerIsFollowing` và
+  `GroupSearchResult.viewerIsMember` được
+  SocialGraph tính từ `ITrustedCallerAccessor` cùng association hiện tại; GraphQL không nhận
+  `viewerId` từ browser cho các field này.
+- Group admin được tính là member. Caller không trusted bị từ chối trước khi đọc profile/group;
+  block filtering và hydration visibility hiện có vẫn được giữ nguyên.
+- Các field chỉ là metadata trình bày cho nhãn tìm kiếm, không cấp quyền truy cập mới, không tạo
+  capability và không thêm bảng hay dữ liệu quan hệ song song.
+
+### 5.5.4. Gateway deployment routing và Nitro exposure — đã vá
+
+- Cả Fusion archive Production và Development dùng cùng endpoint loopback chuẩn
+  `127.0.0.1:1001..1007`; không còn bake tên DNS container vào image Production.
+- Mỗi request Fusion được `FusionSubgraphEndpointHandler` đổi sang
+  `Subgraphs:<Name>:Url` đã validate ở startup. Docker Compose expose bảy biến
+  `GATEWAY_*_SUBGRAPH_URL`, vì vậy bridge network có thể dùng service DNS còn deployment
+  dùng chung network namespace giữ loopback mà không build lại image.
+- URL chỉ nhận HTTP(S) tuyệt đối, không credential/query/fragment; giá trị là cấu hình tin
+  cậy của operator và không bao giờ lấy từ GraphQL/browser input.
+- Nitro UI tại `/graphql` chỉ bật khi `IHostEnvironment.IsDevelopment()`. Regression test
+  xác nhận Production không trả HTML Nitro nhưng POST GraphQL vẫn thực thi bình thường.
+
 ### 5.6. Sổ kiểm kê đầy đủ các bản vá bảo mật và hardening
 
 Bảng này bổ sung những thay đổi trước đây chỉ được nhắc gián tiếp. Nó được đối chiếu với
@@ -271,6 +308,8 @@ availability/defense-in-depth để báo cáo không đánh đồng mọi tối 
 | Gateway edge | JWT hợp lệ nhưng session đã revoke vẫn dùng được | Vulnerability | live Auth session validation và watchdog SSE; 16bdd46 |
 | Gateway edge | Một rate-limit bucket toàn cục và client IP không chính xác sau proxy | Vulnerability | partition đúng caller/IP, forwarded address server-owned; 2022c91 |
 | Gateway GraphQL | Query sâu/rộng/cycle/planner expansion và batching gây amplification | Vulnerability/DoS | parser/depth/cycle/planner/concurrency/timeout limits; 05c729d |
+| Gateway GraphQL | Nitro IDE bị phục vụ cho end-user trong Production | Information exposure/attack surface | `Tool.Enable` theo Development + regression test Production |
+| Gateway routing | Fusion archive bake DNS theo một topology và không override được runtime | Availability/deployment integrity | loopback canonical archive + validated per-subgraph runtime rewrite/Compose override |
 | Gateway GraphQL | Raw refresh token lọt qua composed response | Vulnerability | field internal, response scrub và cookie instruction; c269496 |
 | Browser cookie | Refresh cookie bị gửi tới /media và path không đồng bộ | Vulnerability | cookie path chỉ /graphql; e0f7505, 0bf6bc1 |
 | Browser session | Cookie legacy Path=/ cùng tên che cookie Path=/graphql mới, làm refresh dùng session cũ và đá người dùng sau 15 phút | Availability/session integrity | Gateway lấy cookie path cụ thể theo thứ tự RFC, tự xoá cookie root legacy khi SET/CLEAR; host launcher dùng Secure=false chỉ trên HTTP localhost; frontend chỉ xoá phiên khi Auth từ chối dứt khoát và khoá refresh liên tab; regression tests ngày 27/07/2026 |
@@ -341,26 +380,30 @@ tests và review data flow trước merge.
 | Thành phần | Kết quả |
 | --- | ---: |
 | Authentication | 41/41 |
-| SocialGraph | 254/254 |
+| SocialGraph | 263/263 |
 | Search | 34/34 |
 | Notification | 29/29 |
 | Messenger | 78/78 |
 | Payment unit | 35/35 |
-| Payment Testcontainers | skipped on 29/07/2026 (Docker unavailable) |
+| Payment Testcontainers | skipped on 30/07/2026 (Docker unavailable) |
 | Upload | 22/22 |
-| Gateway | 38/38 |
+| Gateway | 53/53 |
 | Recommendation Python | 55/55 |
-| Frontend Vitest | 358/358 |
+| Frontend Vitest | 367/367 |
 | Frontend build/lint | pass |
 | API security contract guard | pass |
 | Compose standalone validation | pass |
 
-Tổng: **586 backend/Python test + 358 frontend test = 944 test pass**.
+Tổng: **610 backend/Python test + 367 frontend test = 977 test pass**.
 
-Ngày 29/07/2026, sau thay đổi `avatarSource` và luồng `profilePosts` hợp nhất FeedPost/Reel, `check-api-security-contracts.ps1` và
+Ngày 30/07/2026, sau thay đổi `avatarSource`, luồng `profilePosts` hợp nhất FeedPost/Reel,
+hardening candidate/privacy/shortcut của Group và fast-search viewer metadata, `check-api-security-contracts.ps1` và
 `test-all.ps1` đều exit 0; SocialGraph/Fusion schema được export/compose lại. Payment
 Testcontainers không chạy vì máy host không có Docker và được ghi là skipped, không tính vào
 con số pass ở trên.
+
+Cùng ngày, sau hardening runtime Fusion endpoint và tắt Nitro ngoài Development, Gateway
+53/53 test pass; cả hai Compose topology được standalone validator kiểm tra thành công.
 
 ### 6.2. Full-stack smoke
 
