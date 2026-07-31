@@ -161,6 +161,10 @@ The runtime contract is:
   `2=friends`, `3=author only`. Block always wins; tags and mentions never grant access.
 - Group admins are also members. Group posts use mentions only and are linked to their
   author plus the group through `Published`; the removed `Owned` association is not used.
+- Group discovery is a bounded metadata-only projection and recommends both public and private
+  groups joined by the viewer's current friends. It returns a distinct friend count, at most three
+  minimal friend previews and the previous UTC day's post count; it never returns private post
+  content or the remaining member roster. Private-group posts remain member/admin-only at read time.
 - `Contained=28` is the only media-parent association and `Visited=29`. A physical
   upload is deleted only after its final content/profile/message parent is removed.
 - Only public feed posts and reels are shareable. Feed share wrappers remain present

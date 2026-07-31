@@ -1,6 +1,6 @@
 # Báo cáo bảo mật hệ thống Fakebook
 
-**Ngày chốt kiểm tra:** 29/07/2026
+**Ngày chốt kiểm tra:** 31/07/2026
 
 **Phạm vi:** workspace điều phối, Gateway, 7 subgraph, Upload Server, Recommendation Python và frontend
 **Mục tiêu:** hoàn tất giai đoạn 3 đang dở, kiểm tra lại hai giai đoạn Claude Code đã push, và tạo một mốc đủ rõ để nhóm quay lại tập trung frontend.
@@ -272,6 +272,17 @@ sớm khi CPU work còn chạy. Work factor do server cấu hình và validate 1
   quyền xem, và nay trả thêm `visitedAt` lấy từ chính cạnh `Visited(29)` để frontend hiển thị thời
   gian tương đối. Field này không mở rộng quyền đọc hay để lộ dữ liệu của user khác.
 
+Bổ sung hardening cho gợi ý nhóm:
+
+- `groupSuggestions(limit)` là projection metadata có giới hạn và lấy viewer từ trusted context. API
+  xếp hạng cả nhóm công khai lẫn riêng tư mà bạn bè hiện tại đang tham gia; loại nhóm viewer đã là
+  member/admin hoặc đang chờ duyệt, đồng thời loại nguồn bạn bè bị block qua `BlockVisibilityService`.
+  Response chỉ trả tổng số bạn bè distinct, tối đa ba preview bạn bè tối thiểu (`id/name/avatar`) và
+  số GroupPost còn tồn tại trong ngày UTC liền trước. Nó không trả phần còn lại của member roster hay
+  nội dung bài nhóm riêng tư; quyền xem bài nhóm riêng tư vẫn do `ContentGraphService` kiểm tra độc lập
+  ở thời điểm đọc. Các aggregate/preview được batch theo danh sách group đã clamp, không mở đường đọc
+  roster hoặc query từng group từ browser.
+
 ### 5.5.3. Fast-search viewer metadata — trusted projection
 
 - `UserSearchResult.viewerIsSelf/viewerIsFriend/viewerIsFollowing` và
@@ -380,27 +391,41 @@ tests và review data flow trước merge.
 | Thành phần | Kết quả |
 | --- | ---: |
 | Authentication | 41/41 |
-| SocialGraph | 263/263 |
+| SocialGraph | 266/266 |
 | Search | 34/34 |
 | Notification | 29/29 |
 | Messenger | 78/78 |
 | Payment unit | 35/35 |
-| Payment Testcontainers | skipped on 30/07/2026 (Docker unavailable) |
+| Payment Testcontainers | skipped on 31/07/2026 (Docker unavailable) |
 | Upload | 22/22 |
 | Gateway | 53/53 |
 | Recommendation Python | 55/55 |
-| Frontend Vitest | 367/367 |
+| Frontend Vitest | 397/397 |
 | Frontend build/lint | pass |
 | API security contract guard | pass |
 | Compose standalone validation | pass |
 
-Tổng: **610 backend/Python test + 367 frontend test = 977 test pass**.
+Tổng: **613 backend/Python test + 397 frontend test = 1010 test pass**.
 
 Ngày 30/07/2026, sau thay đổi `avatarSource`, luồng `profilePosts` hợp nhất FeedPost/Reel,
 hardening candidate/privacy/shortcut của Group và fast-search viewer metadata, `check-api-security-contracts.ps1` và
 `test-all.ps1` đều exit 0; SocialGraph/Fusion schema được export/compose lại. Payment
 Testcontainers không chạy vì máy host không có Docker và được ghi là skipped, không tính vào
 con số pass ở trên.
+
+Ngày 31/07/2026, sau khi bổ sung `groupSuggestions(limit)`, toàn bộ contract guard và
+`test-all.ps1` tiếp tục exit 0. Regression test xác nhận metadata của nhóm riêng tư có thể xuất
+hiện khi bạn bè tham gia nhưng bài đăng nhóm riêng tư vẫn bị loại với non-member; Fusion
+Production/Development đã compose lại. Payment Testcontainers tiếp tục được ghi là skipped vì
+máy host không có Docker.
+
+Cùng ngày, projection này được mở rộng có kiểm soát để phục vụ thẻ Khám phá: tổng bạn bè
+distinct, tối đa ba preview `id/name/avatar` và số bài của ngày UTC liền trước. Test cố định thời
+gian xác nhận hai biên `[00:00 hôm qua, 00:00 hôm nay)`, member/admin trùng không bị đếm hai lần,
+preview không vượt quá ba, nguồn bị block và group đã tham gia/chờ duyệt đều bị loại. SocialGraph
+266/266, Gateway 53/53 và Frontend 394/394 pass; `check-api-security-contracts.ps1` cùng lần chạy
+`test-all.ps1` cuối đều exit 0. Docker không có trên host nên Payment Testcontainers vẫn được ghi
+nhận là skipped, không được tính là đã chạy.
 
 Cùng ngày, sau hardening runtime Fusion endpoint và tắt Nitro ngoài Development, Gateway
 53/53 test pass; cả hai Compose topology được standalone validator kiểm tra thành công.
