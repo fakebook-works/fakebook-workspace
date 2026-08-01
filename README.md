@@ -161,14 +161,39 @@ The runtime contract is:
   `2=friends`, `3=author only`. Block always wins; tags and mentions never grant access.
 - Group admins are also members. Group posts use mentions only and are linked to their
   author plus the group through `Published`; the removed `Owned` association is not used.
+- Joining either a public or private group creates a pending request; group privacy controls
+  content visibility, not admission. Only a current administrator approves membership.
+  Current members/admins may invite only their current friends; an invite is a block-aware
+  notification and never bypasses the request/approval flow.
 - Group discovery is a bounded metadata-only projection and recommends both public and private
   groups joined by the viewer's current friends. It returns a distinct friend count, at most three
   minimal friend previews and the previous UTC day's post count; it never returns private post
-  content or the remaining member roster. Private-group posts remain member/admin-only at read time.
-- `Contained=28` is the only media-parent association and `Visited=29`. A physical
-  upload is deleted only after its final content/profile/message parent is removed.
-- Only public feed posts and reels are shareable. Feed share wrappers remain present
-  when their source is deleted or becomes private and render an unavailable-source state.
+  content or the remaining member roster. The exact group-profile preview is separately capped at
+  12 and returns only the trusted viewer's current, unblocked friends in that group, including while
+  a private-group request is pending. Private-group posts remain member/admin-only at read time.
+- `Contained=28` is the only media-parent association and `Visited=29`. `leaveGroup`
+  derives the actor from the trusted Gateway context. A successful leave removes that
+  actor's `Member`, optional `Admin`, inverse edges and `Visited` atomically. If the actor
+  is the sole administrator and another current member exists, SocialGraph promotes the
+  earliest-joined member (`Member.time ASC`, then user ID ASC) in the same transaction
+  before removing the actor. The client cannot select the successor. If no successor
+  exists, the leave is rejected and every association is preserved. When an administrator
+  removes a non-admin member, SocialGraph rechecks the administrator under the same serialized
+  group lock and atomically removes the target's Member/inverse and that group's `Visited` edge;
+  visits to other groups are preserved. A physical upload is deleted only after its final
+  content/profile/message parent is removed.
+- Removing a group administrator owns a Serializable transaction and the shared per-group
+  PostgreSQL advisory lock, preserves Member and refuses to remove the last administrator.
+  `deleteGroup` keeps its browser shape but derives the actor from trusted context and deletes
+  only when that actor is the sole current Member/Admin; the local check/delete is serialized
+  under the same group lock before external cleanup runs.
+- A visible Group, FeedPost, GroupPost or Reel may be shared to a feed wrapper, or to a
+  destination group where the trusted actor is a current member/admin. Story sharing remains
+  FeedPost/Reel-only. SocialGraph derives the actor from the trusted Gateway context, rechecks
+  source privacy plus two-way block state and, for a destination group, holds a membership row
+  lock through the write transaction. Wrappers remain present, but their source is projected for
+  each wrapper viewer and becomes unavailable when that viewer can no longer read it (or when the
+  source is deleted); wrapper privacy never grants access to the source.
 - Reels use the same four privacy values as feed posts. Their selected presentation ratio
   (`9/16..16/9`) and normalized focal point are persisted as non-destructive crop metadata,
   so Home and Reel views reproduce the creator's framing without re-encoding the source video.
@@ -243,6 +268,19 @@ still under active development.
   `multipart/form-data` uploads to `/media/*`, which return a URL the SPA then sends to
   the Gateway inside a normal GraphQL mutation. (PayOS webhooks are the only other REST
   path, and they reach the Gateway as a server-to-server proxy, not from the browser.)
+- **Group profile contracts** — `groupPosts`, `groupMedia`, membership and relationship
+  metadata all travel through Gateway GraphQL. Group post privacy is derived from the
+  owning group. A GroupPost can be deleted only by its author or a current administrator
+  of that exact group; tag/mention targets must be both the author's current friends and
+  current participants of the same group.
+- **Viewer-aware sharing** — visible Group, FeedPost, GroupPost and Reel sources can be
+  wrapped in a FeedPost, or in a GroupPost when `destinationGroupId` names a group where the
+  trusted actor is a current member/admin. Existing wrappers are canonicalized to the original
+  source. Private GroupPost content is never projected to outsiders: they receive only safe group
+  metadata and a join prompt. Story share remains FeedPost/Reel-only.
+- **User profile content** — `profilePosts` is allowlisted to visible FeedPost and Reel
+  results only. GroupPost never appears on a user profile and remains available only from
+  group-scoped queries where current group privacy/membership is re-evaluated.
 - **Service ⇄ Service — signed REST** with a per-target HMAC key, timestamp and
   single-use nonce, never GraphQL, with two
   deliberate exceptions: Payment→Auth and Upload→Auth validate sessions by calling
@@ -282,6 +320,11 @@ Every service connects to the same external PostgreSQL host but uses its own
 runtime containers. Each service folder documents its tables in `schema.sql` /
 `*Schema.md`. Compose provisions Redis for SocialGraph caching and the shared security
 nonce store. Never write real credentials into docs or source control.
+
+Runtime roles never create or alter schemas. In particular, Recommendation's three
+owner-run SQL files must be applied before its container starts; its readiness endpoint
+fails closed when the embedding or interaction tables are missing or unreadable instead
+of attempting runtime DDL.
 
 ### Service-to-service calls (REST)
 

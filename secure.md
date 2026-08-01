@@ -578,6 +578,244 @@ $dotnet = & .\scripts\resolve-dotnet.ps1
 .\scripts\check-encoding.ps1
 ~~~
 
+## 11. Gia cố API cho Profile nhóm (31/07/2026)
+
+Đợt hoàn thiện Profile nhóm không mở đường tắt từ browser sang SocialGraph và không tin
+`userId` do client gửi. Các thay đổi API dùng Gateway/trusted caller và policy hiện có:
+
+- `deleteContent(contentId)` vẫn author-only với FeedPost, Reel, comment và Story. Chỉ
+  GroupPost có thêm quyền cho admin hiện tại của **đúng group** được derive từ cạnh
+  `PublishedIn`; mutation không nhận `groupId`, nên không thể gắn group khác để nâng quyền.
+- `createGroupPost` có `taggedUserIds`, nhưng tag và mention token chỉ hợp lệ khi target
+  vừa là bạn hiện tại của author vừa là member/admin hiện tại của cùng group. Block hai
+  chiều vẫn thắng và lỗi cố ý không nêu ID/trạng thái để tránh enumeration.
+- `groupMedia` tái sử dụng `CanViewGroup` và post-detail visibility, chỉ trả Photo/Video.
+  Nhóm riêng tư không rò media cho người ngoài; `groupPhotos` vẫn giữ contract chỉ ảnh.
+- Frontend chỉ gọi các contract trên qua Gateway GraphQL; upload vẫn qua Upload Server và
+  quy trình ownership/finalize hiện có.
+
+Test mới bao phủ admin đúng/sai phạm vi xoá, caller không đủ quyền, tag/mention thiếu quan
+hệ hoặc membership, happy path lưu tag/mention, gallery ảnh+video và việc `groupPhotos`
+không bị đổi semantics. Các mutation `tag`/`mention` độc lập cũng đi qua cùng policy, nên
+không thể dùng đường ghi hậu kỳ để vượt qua điều kiện bạn bè + thành viên nhóm. Suite
+SocialGraph hiện tại: **285/285 pass**. `check-api-security-contracts.ps1` và
+`test-all.ps1` đều pass ngày 31/07/2026; Gateway **53/53**. Sau regression UI cùng ngày,
+frontend **421/421**, lint/build pass và `npm audit` báo 0 vulnerability. Docker không có trên máy kiểm tra nên Payment
+Testcontainers bị skip đúng như script đã báo; không tuyên bố kiểm thử hạ tầng đó đã chạy.
+
+## 12. Chuyển quyền khi quản trị viên duy nhất rời nhóm (31/07/2026)
+
+Luồng `leaveGroup` được gia cố để không tạo nhóm còn thành viên nhưng không còn quản trị viên,
+đồng thời không mở quyền nâng cấp tuỳ ý từ client:
+
+- actor vẫn được lấy từ `ITrustedCallerAccessor`; GraphQL không nhận `successorUserId`;
+- nếu actor là quản trị viên duy nhất, SocialGraph chỉ chọn từ cạnh `HaveMember` hiện tại, loại
+  caller và mọi request đang chờ, sắp theo `time ASC` rồi `userId ASC`;
+- PostgreSQL lấy transaction `Serializable` và advisory lock theo `groupId` trước mọi lần đọc
+  admin/member trong luồng leave; promote successor và xoá Admin/Member/Visited của caller cùng
+  một transaction;
+- cache association chỉ bị invalidate sau commit; nếu không còn thành viên kế nhiệm thì fail-closed,
+  giữ nguyên cả Admin, Member và Visited và yêu cầu dùng luồng xoá nhóm riêng;
+- resolver từ chối caller không trusted/mismatch trước khi gọi graph service.
+- khi không có successor (chỉ còn quản trị viên cuối cùng), frontend không cung cấp thao tác rời
+  nhóm và chỉ cung cấp luồng xoá nhóm; backend vẫn fail-closed nếu client cũ cố gọi `leaveGroup`;
+- `profilePosts` dùng allowlist kết quả `FeedPostDetail`/`ReelDetail`; `GroupPostDetail` không được
+  trộn vào profile user mà chỉ đi qua các query scope group với privacy/membership hiện hành.
+
+Các regression test `GroupLeaveAssociationTests` bao phủ member thường, nhiều admin, chọn người
+vào sớm nhất, tie-break theo ID, không chọn pending request và trạng thái giữ nguyên khi không có
+successor; `GroupShortcutServiceTests` xác nhận resolver không chạm graph khi trusted caller bị từ
+chối. Các test EF InMemory kiểm chứng state transition nhưng **không** được coi là bằng chứng cho
+isolation hoặc advisory lock thật của PostgreSQL; kiểm thử concurrency PostgreSQL cần chạy trong
+môi trường có database integration trước khi tuyên bố hạ tầng đó đã pass.
+
+Evidence của lượt này: SocialGraph **285/285**, frontend **421/421**, frontend lint/build,
+`check-api-security-contracts.ps1` và toàn bộ `test-all.ps1` đều được chạy lại và exit 0 ngày 01/08/2026.
+Docker không có trên host nên Payment Testcontainers bị skip; không tuyên bố kiểm thử
+concurrency PostgreSQL/Docker đã chạy.
+
+## 13. Chia sẻ theo quyền người xem và phân trang bình luận (01/08/2026)
+
+Luồng chia sẻ không còn đồng nhất “không công khai” với “không được xem”. Chính sách mới vẫn
+fail-closed và không mở thêm loại đối tượng nguồn:
+
+- tại thời điểm kiểm chứng mục này, nguồn wrapper/tin là FeedPost/Reel. Contract post-share hiện
+  đã được mở rộng có kiểm soát cho Group/GroupPost ở mục 14; Story vẫn chỉ FeedPost/Reel;
+- resolver lấy actor từ `ITrustedCallerAccessor`, chuẩn hoá wrapper về nguồn gốc rồi gọi
+  `CanShareTargetAsync`; `authorId` trong input không cấp quyền;
+- privacy `0/1/2/3`, quan hệ friend/follow hiện tại và block hai chiều được kiểm tra ở thời điểm
+  mutation. Người đang thực sự xem được nguồn mới tạo được wrapper hoặc tin;
+- mỗi lần đọc wrapper và mỗi lần đọc tin chia sẻ đều kiểm lại độc lập quyền của viewer đối với
+  bài gốc. Privacy của wrapper/tin không mở rộng quyền bài gốc; nguồn bị xoá, đổi privacy, mất quan
+  hệ hoặc block sẽ thành unavailable/không được trả riêng với viewer mất quyền;
+- frontend không còn tự suy quyền từ `privacy === 0`. Nút Chia sẻ vẫn hiện trên nội dung đã được
+  API hydrate; API là điểm quyết định cuối. Fallback tải chi tiết bài dùng fail-closed, không dùng
+  payload preview cũ để giả định `isAvailable=true`.
+
+Phân trang bình luận được gia cố cho trường hợp cạnh thô trỏ tới comment đã xoá, thiếu author hoặc
+author bị block:
+
+- SocialGraph overscan có giới hạn (tối đa 100 cạnh/lần), trả tối đa đúng page size và tiến cursor
+  theo số cạnh thô đã xử lý, nên comment hợp lệ phía sau không bị mất chỉ vì trang đầu bị lọc;
+- frontend giữ nút tải trang phản hồi khi page hiện tại rỗng nhưng vẫn còn cursor, đồng thời khử
+  trùng ID khi nối page root;
+- truy cập trực tiếp bằng `commentId` kiểm tra author comment và block hai chiều trước khi đọc con
+  hoặc cho phép reply, tránh dùng ID đã biết để vượt projection ẩn.
+
+Cursor association hiện vẫn là offset. Khử trùng phía client xử lý duplicate khi có insert đồng
+thời, nhưng keyset `(time,id2)` vẫn là cải tiến dài hạn để loại hoàn toàn khả năng skip do xoá cạnh
+trước cursor giữa hai request; không được tuyên bố hạn chế này đã biến mất.
+
+Evidence ngày 01/08/2026: SocialGraph **293/293**, frontend **434/434**, Recommendation
+**55/55**, toàn bộ các suite .NET còn lại, frontend build/lint, Docker Compose standalone validation,
+`check-api-security-contracts.ps1` và `test-all.ps1` đều exit 0. Docker daemon không có trên host nên
+Payment Testcontainers bị skip đúng như script báo; không tuyên bố bài kiểm thử hạ tầng Docker đó đã chạy.
+
+## 14. Chia sẻ Group/GroupPost và URL media không qua server fetch (01/08/2026)
+
+Contract chia sẻ bài được mở rộng nhưng không mở rộng quyền xem nguồn:
+
+- `SharePostInput.destinationGroupId` chỉ là resource đích. Actor luôn lấy từ
+  `ITrustedCallerAccessor`; resolver yêu cầu actor là Member/Admin hiện tại của group đích rồi mới
+  tạo GroupPost wrapper. `authorId` client gửi không cấp quyền và privacy client gửi bị bỏ qua đối
+  với GroupPost vì privacy được suy ra từ group;
+- nguồn được chuẩn hoá qua cả FeedPost wrapper và GroupPost wrapper. `CanShareTargetAsync` chỉ cho
+  Group metadata hoặc FeedPost/GroupPost/Reel mà actor hiện xem được. Block hai chiều và membership
+  hiện tại vẫn thắng; lỗi mutation dùng thông báo chung, không biến thành existence/privacy oracle;
+- Story dùng policy riêng `CanShareStoryTargetAsync` và association rules cũng giới hạn Story target
+  ở FeedPost/Reel. Vì vậy gọi GraphQL trực tiếp không thể gắn Group/GroupPost vào Story;
+- mỗi lần hydrate wrapper, private GroupPost chỉ trả content/author/media/mentions cho Member/Admin
+  hiện tại. Người ngoài chỉ nhận thẻ group tối thiểu và `requiresGroupMembership`; nếu source bị xoá,
+  group/author hỏng hoặc block hai chiều thì trả unavailable chung và không kèm metadata có thể làm
+  lộ quan hệ;
+- tạo wrapper ghi Authored, Published (nếu có) và Share trong cùng transaction. Cạnh bắt buộc trả
+  false sẽ làm fail và rollback/invalidate thay vì để lại tài khoản/bài wrapper ma. Không cần migration
+  database: association/object schema hiện có đã biểu diễn đủ contract;
+- với GroupPost thường và GroupPost tạo từ share, SocialGraph kiểm tra lại Member/Admin bên trong
+  transaction và giữ `FOR KEY SHARE` trên cạnh membership tới lúc commit. Một thao tác rời/bị xoá
+  khỏi nhóm đồng thời không thể chen vào khoảng giữa policy check và cạnh Published; nếu membership
+  đã mất thì mutation fail-closed trước khi tạo object;
+- frontend vẫn chỉ gọi Gateway GraphQL. URL trong post/comment/chat được parser scheme an toàn;
+  URL ảnh dán vào comment/chat được tải ở browser với CORS, `credentials: omit`, `no-referrer`, timeout
+  và giới hạn stream 25 MiB ngay cả khi response không có `Content-Length`; redirect bị từ chối và
+  URL chứa credentials không được chấp nhận. File sau đó vẫn đi qua Upload Server + media
+  ownership/finalize hiện có. Preview không hot-link ảnh ngoài tuỳ ý để tránh lộ IP người xem; link
+  ngoài chỉ hiện thẻ host, còn ảnh đã import hoặc media nội bộ mới được render. Không có endpoint
+  backend fetch URL mới, nên không tái tạo SSRF đã vá ở Recommendation;
+- feed/recommendation tiếp tục loại hẳn top-level post mà viewer không có quyền để không làm lộ sự
+  tồn tại. Chỉ deep-link đã biết và shared wrapper mà viewer được phép thấy mới render shell chung
+  “bài viết không khả dụng”; shell không trả author/content/media/comment của nguồn.
+
+Negative regression bao phủ private-group outsider, member/admin/current visibility, group metadata,
+Story type boundary, destination membership và trusted actor. UI test bao phủ unavailable shell,
+privacy owner control, multi-conversation share, destination-group share và URL parsing/upload path.
+Evidence ngày 01/08/2026: SocialGraph **304/304**, Gateway **53/53**, frontend **447/447**,
+Authentication **41/41**, Search **34/34**, Notification **29/29**, Messenger **78/78**,
+Payment unit **35/35**, Upload **22/22**, Recommendation **55/55**; frontend lint/build và Fusion
+compose cho cả Production/Development đều pass. `check-api-security-contracts.ps1` và toàn bộ
+`test-all.ps1` đều exit 0. Docker daemon không có trên host nên Payment Testcontainers bị skip;
+Docker Compose chỉ được kiểm tra bằng standalone validator, không tuyên bố runtime Docker đã chạy.
+
+## 15. Duyệt tham gia và mời thành viên nhóm (01/08/2026)
+
+Privacy của nhóm chỉ quyết định quyền đọc; nó không còn là đường tắt cấp membership.
+Cả nhóm công khai lẫn riêng tư đều tạo `GroupJoinRequest`; chỉ mutation duyệt/từ chối
+dành cho quản trị viên mới chuyển request thành cạnh Member. Request trùng không gửi thêm
+notification khi ghi cạnh bị từ chối.
+
+Mutation mời thành viên vẫn lấy actor từ `ITrustedCallerAccessor` và fail-closed. Resolver và
+service đều xác minh actor là Member/Admin hiện tại; service còn yêu cầu người được mời
+là bạn hiện tại, chưa là thành viên, chưa có request chờ và không có block hai chiều.
+Lời mời chỉ tạo notification, không trực tiếp ghi membership; người nhận vẫn đi qua luồng
+request và admin approval. Vì vậy nhãn UI `Thêm người` của admin và `Mời` của member
+khác nhau về ngữ cảnh/quyền quản lý, không phải là hai quy ước cấp membership khác nhau.
+
+Negative regression bao phủ public-group pending approval, authenticated outsider không được mời,
+member không phải friend không được mời và resolver không dispatch khi participant guard thất bại.
+Evidence ngày 01/08/2026: SocialGraph **306/306**, frontend **461/461**, Authentication
+**41/41**, Search **34/34**, Notification **29/29**, Messenger **78/78**, Payment unit **35/35**,
+Upload **22/22**, Gateway **53/53**, Recommendation **55/55**; frontend lint/build,
+`check-api-security-contracts.ps1` và `test-all.ps1` đều exit 0. Docker không có trên host nên
+Payment Testcontainers bị skip; Docker Compose được kiểm tra bằng standalone validator,
+không tuyên bố runtime Docker đã chạy.
+
+### 15.1. Projection yêu cầu và invariant vai trò cuối nhóm
+
+Cặp cạnh canonical vẫn là `GroupJoinRequest(17)` từ user sang group và
+`HaveGroupJoinRequest(18)` từ group sang user. `pendingGroupJoins` đọc cạnh 17 của trusted
+user. Query dành cho quản trị viên `groupJoinRequests` nay đọc cạnh 18 qua
+`UserSummaryPageResult`; nó không còn expose raw association rồi bắt browser hydrate lần hai.
+Resolver và read model đều xác minh Admin hiện tại từ trusted actor, page bị clamp tối đa 50,
+và việc lọc block hai chiều/profile đã xoá hiện có vẫn được giữ nguyên.
+
+`groupFriendMembers(groupId, limit)` là projection tối thiểu dành cho header profile nhóm riêng tư.
+Nó không nhận viewer ID từ browser, clamp tối đa 12 và chỉ trả giao của Friend hiện tại với
+Member/Admin hiện tại của đúng group sau khi lọc block hai chiều/profile đã xoá. Query vẫn dùng được
+khi viewer đang chờ duyệt nhưng không trả người lạ hoặc phần còn lại của private roster.
+
+Audit này cũng đóng hai khoảng trống authorization/invariant trong vòng đời nhóm:
+
+- gỡ quyền quản trị sở hữu transaction Serializable và lấy PostgreSQL advisory lock theo group
+  giống `leaveGroup`; membership được giữ lại và quản trị viên cuối không thể bị gỡ;
+- `deleteGroup` giữ nguyên arguments GraphQL công khai, lấy actor từ trusted Gateway accessor và
+  truyền actor xuống service. Chỉ actor vừa là Admin vừa là participant cuối hiện tại mới xoá
+  được nhóm. Kiểm tra hai hướng Member/Admin và xoá local chạy trong transaction Serializable dưới
+  cùng PostgreSQL advisory lock theo group; cleanup ngoài service chỉ chạy sau commit. Pending request
+  không phải participant và bị xoá cùng group.
+- quản trị viên xoá thành viên không còn là hai lần ghi rời rạc. Trusted actor được truyền xuống
+  association boundary, kiểm tra lại từ cặp Admin/HaveAdmin dưới transaction Serializable và cùng
+  advisory lock theo group; Member/HaveMember cùng `Visited` của đúng target-group bị xoá trước commit.
+  Target đang là admin bị từ chối và các cạnh Visited không liên quan được giữ nguyên.
+
+Regression bao phủ đúng hướng inverse request, clamp 50, non-admin bị chặn trước khi đọc bucket,
+trusted-actor dispatch, từ chối xoá khi còn participant khác, demote giữ membership, hai demote
+tuần tự vẫn giữ một admin, role state hỏng fail-closed, preview chỉ trả friend hợp lệ và cạnh forward
+membership bị hỏng inverse vẫn chặn xoá nhóm. Regression xoá thành viên xác nhận Member/HaveMember
+và `Visited` đúng target-group cùng biến mất, actor thiếu inverse Admin bị từ chối, target admin bị
+từ chối và các visit không liên quan được giữ nguyên. SocialGraph **326/326**, frontend **467/467** và
+Gateway **53/53** test pass; frontend lint/build và `npm audit` (0 vulnerability) cũng pass.
+Ngày 01/08/2026, `check-api-security-contracts.ps1` và toàn bộ `test-all.ps1` đều exit 0;
+Authentication **41/41**, Search **34/34**, Notification **29/29**, Messenger **78/78**,
+Payment unit **35/35**, Upload **22/22** và Recommendation **55/55** cũng pass. Docker daemon
+không có trên host nên Payment Testcontainers bị skip; Compose chỉ được kiểm tra thành công bằng
+standalone validator. Transaction/invariant ở trên có unit/EF InMemory evidence, nhưng không tuyên
+bố PostgreSQL concurrency integration hoặc runtime Docker đã chạy trong môi trường này.
+
+## 16. Runtime DDL của Recommendation và phạm vi quan sát hệ thống (01/08/2026)
+
+Log production cho thấy runtime role `fakebook_recommendation` bị từ chối `CREATE TABLE`
+trong schema `recommendation`. Đây không phải lý do để cấp thêm quyền: role theo contract chỉ
+có `USAGE` schema cùng DML trên bảng đã migrate; `CREATE` tiếp tục bị cấm. Nguyên nhân là
+đường xử lý interaction/delete cũ gọi `CREATE TABLE IF NOT EXISTS` và `CREATE INDEX IF NOT
+EXISTS` trong request runtime.
+
+Đợt vá này giữ nguyên DB role isolation:
+
+- toàn bộ DDL được loại khỏi module Python runtime; ba file SQL của Recommendation vẫn phải
+  được migration owner chạy trước khi khởi động service;
+- `/health/ready` kiểm tra quyền đọc ba bảng `user_embeddings`, `post_embeddings` và
+  `recommendation_interactions` bằng tên schema đầy đủ, trả `503` fail-closed nếu migration
+  thiếu, database không tới được hoặc runtime role không đọc được;
+- guard workspace từ chối tái đưa `CREATE TABLE`/`CREATE INDEX` vào module database runtime;
+  regression test còn xác nhận các luồng record/delete không phát DDL;
+- không đưa `DB_USER`/`DB_PASSWORD` owner vào container Recommendation và không cấp
+  `CREATE ON SCHEMA recommendation` cho runtime role.
+
+Audit quan sát hệ thống xác nhận cả bảy subgraph, Gateway và Upload Server đều phát traces và
+metrics qua OTLP. Collector hiện chỉ expose metrics theo định dạng Prometheus ở loopback
+`:9464`; traces đi vào debug exporter và không được lưu, chưa có logs pipeline. Compose chưa
+provision Prometheus server, Grafana, Tempo hoặc Loki. Vì vậy đây là telemetry transport sẵn
+sàng tích hợp, không được mô tả là một Grafana stack end-to-end đã hoạt động. PostgreSQL/Redis
+và host/container cũng chưa có exporter chuyên dụng.
+
+Evidence sau vá: Recommendation **58/58**, SocialGraph **326/326**, frontend **467/467**,
+Authentication **41/41**, Search **34/34**, Notification **29/29**, Messenger **78/78**,
+Payment unit **35/35**, Upload **22/22** và Gateway **53/53** pass. Frontend lint/build,
+security contracts, secret scan, encoding, environment/port checks và Compose standalone
+validation đều exit 0 qua `test-all.ps1`. Docker daemon không có trên host nên Payment
+Testcontainers bị skip; không tuyên bố migration live trên `gem3`, runtime Docker, PostgreSQL
+concurrency integration hoặc Grafana backend đã được kiểm thử.
+
 ---
 
 **Verdict:** phase 3 đã hoàn tất về code, migration, cấu hình và kiểm chứng. Backend đủ ổn

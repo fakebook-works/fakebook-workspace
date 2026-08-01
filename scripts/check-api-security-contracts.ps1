@@ -105,6 +105,10 @@ foreach ($contract in @('nx=True', 'ex=retention', 'UNAVAILABLE = "unavailable"'
 }
 $pythonApi = Read-WorkspaceText 'RecommendationService\Backend-Recommendation\ForFakebook\EmbeddingModel.py'
 Assert-ContainsLiteral $pythonApi 'INTERNAL_REPLAY_PROTECTION_UNAVAILABLE' 'Python fail-closed replay response'
+Assert-ContainsLiteral $pythonApi 'recommendation_schema_is_ready' 'Recommendation migration readiness check'
+$recommendationDatabase = Read-WorkspaceText 'RecommendationService\Backend-Recommendation\ForFakebook\database.py'
+Assert-DoesNotContainLiteral $recommendationDatabase 'CREATE TABLE' 'Recommendation runtime table DDL'
+Assert-DoesNotContainLiteral $recommendationDatabase 'CREATE INDEX' 'Recommendation runtime index DDL'
 
 $deployCompose = Read-WorkspaceText 'docker-compose.yaml'
 Assert-LiteralCount $deployCompose 'InternalAuth__RequireSignature: "true"' 7 'deploy signature enforcement'
