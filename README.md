@@ -325,10 +325,18 @@ runtime containers. Each service folder documents its tables in `schema.sql` /
 `*Schema.md`. Compose provisions Redis for SocialGraph caching and the shared security
 nonce store. Never write real credentials into docs or source control.
 
-Runtime roles never create or alter schemas. In particular, Recommendation's three
-owner-run SQL files must be applied before its container starts; its readiness endpoint
-fails closed when the embedding or interaction tables are missing or unreadable instead
-of attempting runtime DDL.
+Runtime roles never create or alter schemas. Although the standalone service repositories
+enable automatic migrations by default for development, every managed workspace launcher
+explicitly disables startup DDL:
+
+- Authentication, SocialGraph and Messenger: `DatabaseMigrations__Enabled=false`;
+- Recommendation: `RECOMMENDATION_DB_MIGRATIONS_ENABLED=false`;
+- Search and Payment: `Database__ApplySchemaOnStartup=false`;
+- Notification: `Database__ApplyMigrationsOnStartup=false`.
+
+Run the reviewed migrations with the owner before starting the runtime containers. In
+particular, Recommendation's readiness endpoint fails closed when the embedding or
+interaction tables are missing, unreadable or structurally incompatible.
 
 Recommendation content embeddings are a bounded long-running internal operation: the
 SocialGraph outbox uses a dedicated signed client with

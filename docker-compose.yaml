@@ -58,6 +58,7 @@ services:
       ASPNETCORE_URLS: http://+:1001
       ConnectionStrings__DefaultConnection: Host=${DB_HOST};Port=${DB_PORT};Database=${DB_NAME};Username=${AUTH_DB_USER:?Set AUTH_DB_USER in .env};Password=${AUTH_DB_PASSWORD:?Set AUTH_DB_PASSWORD in .env};Search Path=auth;Timeout=10;Command Timeout=30
       ConnectionStrings__SecurityRedis: redis:6379
+      DatabaseMigrations__Enabled: "false"
       Jwt__Issuer: fakebook-auth
       Jwt__Audience: fakebook
       Jwt__PrivateKeyBase64: ${JWT_PRIVATE_KEY_BASE64:?Generate JWT_PRIVATE_KEY_BASE64 with scripts/initialize-secrets.ps1}
@@ -107,6 +108,7 @@ services:
       ConnectionStrings__PostgreSQL: Host=${DB_HOST};Port=${DB_PORT};Database=${DB_NAME};Username=${SOCIALGRAPH_DB_USER:?Set SOCIALGRAPH_DB_USER in .env};Password=${SOCIALGRAPH_DB_PASSWORD:?Set SOCIALGRAPH_DB_PASSWORD in .env};Search Path=social_graph;Timeout=10;Command Timeout=30
       ConnectionStrings__Redis: redis:6379
       ConnectionStrings__SecurityRedis: redis:6379
+      DatabaseMigrations__Enabled: "false"
       Gateway__InternalSharedSecret: ${SOCIALGRAPH_GATEWAY_SECRET:?Set a dedicated SOCIALGRAPH_GATEWAY_SECRET in .env}
       InternalServices__SocialGraph__SharedSecret: ${SOCIALGRAPH_INTERNAL_SECRET:?Set SOCIALGRAPH_INTERNAL_SECRET in .env}
       IntegrationOutbox__PayloadEncryptionKey: ${SOCIALGRAPH_OUTBOX_ENCRYPTION_KEY:?Set SOCIALGRAPH_OUTBOX_ENCRYPTION_KEY in .env}
@@ -164,6 +166,7 @@ services:
     environment:
       <<: [*postgres-base, *observability]
       DATABASE_URL: postgresql://${RECOMMENDATION_DB_USER:?Set RECOMMENDATION_DB_USER in .env}:${RECOMMENDATION_DB_PASSWORD:?Set RECOMMENDATION_DB_PASSWORD in .env}@${DB_HOST}:${DB_PORT}/${DB_NAME}?options=-csearch_path%3Drecommendation%2Cpublic
+      RECOMMENDATION_DB_MIGRATIONS_ENABLED: "false"
       INTERNAL_SHARED_SECRET: ${RECOMMENDATION_GATEWAY_SECRET:?Set a dedicated RECOMMENDATION_GATEWAY_SECRET in .env}
       RECOMMENDATION_INTERNAL_SECRET: ${RECOMMENDATION_INTERNAL_SECRET:?Set RECOMMENDATION_INTERNAL_SECRET in .env}
       SOCIAL_GRAPH_SERVICE_SECRET: ${SOCIALGRAPH_INTERNAL_SECRET:?Set SOCIALGRAPH_INTERNAL_SECRET in .env}
@@ -262,6 +265,7 @@ services:
       ASPNETCORE_URLS: http://+:1006
       ConnectionStrings__PostgreSQL: Host=${DB_HOST};Port=${DB_PORT};Database=${DB_NAME};Username=${MESSENGER_DB_USER:?Set MESSENGER_DB_USER in .env};Password=${MESSENGER_DB_PASSWORD:?Set MESSENGER_DB_PASSWORD in .env};Search Path=messenger;Timeout=10;Command Timeout=30
       ConnectionStrings__SecurityRedis: redis:6379
+      DatabaseMigrations__Enabled: "false"
       Gateway__InternalSharedSecret: ${MESSENGER_GATEWAY_SECRET:?Set a dedicated MESSENGER_GATEWAY_SECRET in .env}
       InternalServices__MessengerSharedSecret: ${MESSENGER_INTERNAL_SECRET:?Set MESSENGER_INTERNAL_SECRET in .env}
       InternalServices__SocialGraph__BaseUrl: http://social-graph:1002

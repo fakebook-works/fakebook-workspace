@@ -395,6 +395,7 @@ Invoke-CheckedCommand `
     -Environment @{
         'ASPNETCORE_ENVIRONMENT' = 'Production'
         'DOTNET_ENVIRONMENT' = 'Production'
+        'DatabaseMigrations__Enabled' = 'false'
     }
 $socialGraphSchema = [IO.File]::ReadAllText($socialGraphSchemaPath)
 $socialGraphSchema = [Text.RegularExpressions.Regex]::Replace(
@@ -450,6 +451,7 @@ Invoke-CheckedCommand `
         'ASPNETCORE_ENVIRONMENT' = 'Production'
         'DOTNET_ENVIRONMENT' = 'Production'
         'ConnectionStrings__PostgreSQL' = "$messengerDb;Search Path=messenger"
+        'DatabaseMigrations__Enabled' = 'false'
         'Gateway__InternalSharedSecret' = $config['MESSENGER_GATEWAY_SECRET']
         'InternalServices__MessengerSharedSecret' = $config['MESSENGER_INTERNAL_SECRET']
         'InternalServices__SocialGraph__BaseUrl' = 'http://127.0.0.1:1002'
@@ -507,6 +509,7 @@ try {
     $auth = Start-FakebookProcess -Name 'authentication' -Port 1001 -WorkingDirectory (Join-Path $root 'AuthenticationService\Backend-Authentication\fakebookAuth') -FilePath $dotnet -ArgumentList @('bin\Release\net10.0\fakebookAuth.dll') -Environment (Merge-Environment $commonDotnet @{
         'ASPNETCORE_URLS' = 'http://127.0.0.1:1001'
         'ConnectionStrings__DefaultConnection' = "$authDb;Search Path=auth"
+        'DatabaseMigrations__Enabled' = 'false'
         'Jwt__Issuer' = 'fakebook-auth'
         'Jwt__Audience' = 'fakebook'
         'Jwt__PrivateKeyBase64' = $config['JWT_PRIVATE_KEY_BASE64']
@@ -561,6 +564,7 @@ try {
     $messaging = Start-FakebookProcess -Name 'messaging' -Port 1006 -WorkingDirectory (Join-Path $root 'MessengerService\MessengerService') -FilePath $dotnet -ArgumentList @('bin\Release\net10.0\MessengerService.dll') -Environment (Merge-Environment $commonDotnet @{
         'ASPNETCORE_URLS' = 'http://127.0.0.1:1006'
         'ConnectionStrings__PostgreSQL' = "$messengerDb;Search Path=messenger"
+        'DatabaseMigrations__Enabled' = 'false'
         'Gateway__InternalSharedSecret' = $config['MESSENGER_GATEWAY_SECRET']
         'InternalServices__MessengerSharedSecret' = $config['MESSENGER_INTERNAL_SECRET']
         'InternalServices__SocialGraph__BaseUrl' = 'http://127.0.0.1:1002'
@@ -578,6 +582,7 @@ try {
     $recommendationDatabase = [Uri]::EscapeDataString($config['DB_NAME'])
     $recommendation = Start-FakebookProcess -Name 'recommendation' -Port 1003 -WorkingDirectory (Join-Path $root 'RecommendationService\Backend-Recommendation') -FilePath $python -ArgumentList @('-m', 'uvicorn', 'ForFakebook.EmbeddingModel:app', '--host', '127.0.0.1', '--port', '1003') -Environment @{
         'DATABASE_URL' = "postgresql://$recommendationUser`:$recommendationPassword@$($config['DB_HOST']):$($config['DB_PORT'])/$recommendationDatabase`?options=-csearch_path%3Drecommendation%2Cpublic"
+        'RECOMMENDATION_DB_MIGRATIONS_ENABLED' = 'false'
         'INTERNAL_SHARED_SECRET' = $config['RECOMMENDATION_GATEWAY_SECRET']
         'RECOMMENDATION_INTERNAL_SECRET' = $config['RECOMMENDATION_INTERNAL_SECRET']
         'SOCIAL_GRAPH_SERVICE_SECRET' = $config['SOCIALGRAPH_INTERNAL_SECRET']
@@ -601,6 +606,7 @@ try {
         'ASPNETCORE_URLS' = 'http://127.0.0.1:1002'
         'ConnectionStrings__PostgreSQL' = "$socialGraphDb;Search Path=social_graph"
         'ConnectionStrings__Redis' = $redisConnectionString
+        'DatabaseMigrations__Enabled' = 'false'
         'Gateway__InternalSharedSecret' = $config['SOCIALGRAPH_GATEWAY_SECRET']
         'InternalServices__SocialGraph__SharedSecret' = $config['SOCIALGRAPH_INTERNAL_SECRET']
         'InternalServices__Authentication__BaseUrl' = 'http://127.0.0.1:1001'

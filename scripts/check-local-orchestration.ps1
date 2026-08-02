@@ -28,6 +28,20 @@ function Assert-DoesNotContainLiteral {
     }
 }
 
+function Assert-LiteralCount {
+    param(
+        [string]$Content,
+        [string]$Literal,
+        [int]$Expected,
+        [string]$Description
+    )
+
+    $count = ([regex]::Matches($Content, [regex]::Escape($Literal))).Count
+    if ($count -ne $Expected) {
+        throw "Local orchestration expected $Expected occurrence(s) of $Description, found $count."
+    }
+}
+
 $scriptNames = @(
     'start-local.ps1',
     'stop-local.ps1',
@@ -135,6 +149,10 @@ Assert-ContainsLiteral $start 'Export SocialGraph Fusion schema' 'SocialGraph sc
 Assert-ContainsLiteral $start 'gatewaySocialGraphSchemaPath' 'SocialGraph schema copy into Gateway source schemas'
 Assert-ContainsLiteral $start 'compose-fusion.ps1' 'Gateway Fusion archive composition'
 Assert-DoesNotContainLiteral $start "`$config['JWT_SIGNING_KEY']" 'legacy shared JWT signer'
+Assert-LiteralCount $start "'DatabaseMigrations__Enabled' = 'false'" 5 'Auth/SocialGraph/Messaging runtime and schema-export migration disablement'
+Assert-LiteralCount $start "'RECOMMENDATION_DB_MIGRATIONS_ENABLED' = 'false'" 1 'Recommendation startup migration disablement'
+Assert-LiteralCount $start "'Database__ApplySchemaOnStartup' = 'false'" 3 'Search runtime/schema-export and Payment startup migration disablement'
+Assert-LiteralCount $start "'Database__ApplyMigrationsOnStartup' = 'false'" 1 'Notification startup migration disablement'
 
 
 $status = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'status-local.ps1') -Raw -Encoding UTF8

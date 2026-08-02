@@ -113,6 +113,10 @@ Assert-DoesNotContainLiteral $recommendationDatabase 'CREATE INDEX' 'Recommendat
 $deployCompose = Read-WorkspaceText 'docker-compose.yaml'
 Assert-LiteralCount $deployCompose 'InternalAuth__RequireSignature: "true"' 7 'deploy signature enforcement'
 Assert-LiteralCount $deployCompose 'InternalAuth__SendLegacySecret: "false"' 7 'deploy legacy-secret transmission disablement'
+Assert-LiteralCount $deployCompose 'DatabaseMigrations__Enabled: "false"' 3 'deploy .NET startup migration disablement'
+Assert-LiteralCount $deployCompose 'RECOMMENDATION_DB_MIGRATIONS_ENABLED: "false"' 1 'deploy Recommendation startup migration disablement'
+Assert-LiteralCount $deployCompose 'Database__ApplySchemaOnStartup: "false"' 2 'deploy Search/Payment startup migration disablement'
+Assert-LiteralCount $deployCompose 'Database__ApplyMigrationsOnStartup: "false"' 1 'deploy Notification startup migration disablement'
 Assert-LiteralCount $deployCompose 'ConnectionStrings__SecurityRedis: redis:6379' 6 'deploy .NET security Redis wiring'
 Assert-LiteralCount $deployCompose 'SECURITY_REDIS_URL: redis://redis:6379/0' 1 'deploy Python security Redis wiring'
 Assert-LiteralCount $deployCompose 'Jwt__PrivateKeyBase64:' 1 'deploy Auth-only JWT private key'
@@ -128,6 +132,12 @@ Assert-DoesNotContainLiteral $deployCompose 'Tailscale' 'development-only Tailsc
 Assert-DoesNotContainLiteral $deployCompose 'tailnet' 'development-only tailnet documentation in deploy configuration'
 Assert-ContainsLiteral $deployCompose '${PUBLIC_ORIGIN:?Set PUBLIC_ORIGIN in .env}' 'operator-managed HTTPS deploy origin'
 Assert-ContainsLiteral $deployCompose '${EDGE_BIND_ADDRESS:-127.0.0.1}:${EDGE_PORT:-8080}:80' 'loopback-safe deploy edge binding'
+
+$hostCompose = Read-WorkspaceText 'fixdeploy\compose.yaml'
+Assert-LiteralCount $hostCompose 'DatabaseMigrations__Enabled: "false"' 3 'host .NET startup migration disablement'
+Assert-LiteralCount $hostCompose 'RECOMMENDATION_DB_MIGRATIONS_ENABLED: "false"' 1 'host Recommendation startup migration disablement'
+Assert-LiteralCount $hostCompose 'Database__ApplySchemaOnStartup: "false"' 2 'host Search/Payment startup migration disablement'
+Assert-LiteralCount $hostCompose 'Database__ApplyMigrationsOnStartup: "false"' 1 'host Notification startup migration disablement'
 foreach ($subgraphVariable in @(
     'GATEWAY_AUTHENTICATION_SUBGRAPH_URL',
     'GATEWAY_SOCIALGRAPH_SUBGRAPH_URL',
