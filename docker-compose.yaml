@@ -126,6 +126,7 @@ services:
       InternalServices__Upload__BaseUrl: http://upload:4001
       InternalServices__Upload__SharedSecret: ${UPLOAD_INTERNAL_SECRET:?Set UPLOAD_INTERNAL_SECRET in .env}
       InternalServices__TimeoutSeconds: 10
+      InternalServices__Recommendation__ContentTimeoutSeconds: ${RECOMMENDATION_CONTENT_TIMEOUT_SECONDS:-180}
       InternalAuth__RequireSignature: "true"
       InternalAuth__SendLegacySecret: "false"
       ExternalServices__AuthenticationServiceCreateUser: http://authentication:1001/internal/users

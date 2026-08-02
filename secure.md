@@ -820,3 +820,21 @@ concurrency integration hoặc Grafana backend đã được kiểm thử.
 
 **Verdict:** phase 3 đã hoàn tất về code, migration, cấu hình và kiểm chứng. Backend đủ ổn
 để chuyển trọng tâm sang frontend, với các ngoại lệ vận hành ở mục 8 được theo dõi riêng.
+
+## 17. Theo dõi triển khai Recommendation (02/08/2026)
+
+Log production chỉ còn được coi là đã xử lý sau khi operator pull image chứa bản vá DDL,
+chạy ba migration bằng owner trên PostgreSQL volume hiện có, rồi recreate Recommendation
+và SocialGraph. Runtime role tiếp tục chỉ có `USAGE` và DML trên bảng; tuyệt đối không cấp
+`CREATE` trên schema `recommendation`.
+
+Dispatch content embedding nay dùng timeout riêng có giới hạn 180 giây, cấu hình bằng
+`RECOMMENDATION_CONTENT_TIMEOUT_SECONDS`. Các signed internal call khác vẫn giữ timeout
+10 giây; Polly không tự retry HTTP method không an toàn, còn outbox tiếp tục sở hữu
+idempotency, retry có giới hạn và dead-letter.
+
+Evidence cục bộ sau vá: SocialGraph **327/327**, Recommendation **59/59**, toàn bộ
+`check-api-security-contracts.ps1` và `test-all.ps1` đều exit 0; các service .NET còn lại,
+frontend **514/514**, build/lint và Compose standalone validation đều pass. Docker daemon
+không có trên máy kiểm tra nên Payment Testcontainers bị skip; chưa tuyên bố runtime
+container trên `gem3` đã được kiểm chứng.

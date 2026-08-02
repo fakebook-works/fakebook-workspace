@@ -197,6 +197,10 @@ The runtime contract is:
 - Reels use the same four privacy values as feed posts. Their selected presentation ratio
   (`9/16..16/9`) and normalized focal point are persisted as non-destructive crop metadata,
   so Home and Reel views reproduce the creator's framing without re-encoding the source video.
+- The Reel `FOLLOWING` feed is the bounded union of accepted friends and actively followed
+  authors. SocialGraph applies privacy, block and membership policy before Recommendation
+  ranks that candidate pool; public discovery candidates cannot displace relationship
+  candidates before this source filter runs.
 - User/group photo galleries and existing-photo pickers are context-scoped and paged.
   Avatar/cover crops are separate assets. A newly uploaded avatar original creates the
   public activity `đã cập nhật ảnh đại diện`; a newly uploaded cover original creates
@@ -325,6 +329,13 @@ Runtime roles never create or alter schemas. In particular, Recommendation's thr
 owner-run SQL files must be applied before its container starts; its readiness endpoint
 fails closed when the embedding or interaction tables are missing or unreadable instead
 of attempting runtime DDL.
+
+Recommendation content embeddings are a bounded long-running internal operation: the
+SocialGraph outbox uses a dedicated signed client with
+`InternalServices__Recommendation__ContentTimeoutSeconds` (default 180 seconds), while
+all other internal calls retain the short 10-second timeout. The longer limit does not
+enable retries for unsafe HTTP methods; idempotent outbox delivery and the existing
+dead-letter policy remain authoritative.
 
 ### Service-to-service calls (REST)
 

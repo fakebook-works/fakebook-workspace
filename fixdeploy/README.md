@@ -20,6 +20,28 @@ docker compose --env-file envfile -f compose.yaml up -d
 docker compose --env-file envfile -f compose.yaml ps
 ```
 
+After a Recommendation security fix, `pull` must be followed by recreation of the
+running containers; an already-running container keeps its previous image even when the
+registry tag is `main`:
+
+```bash
+docker compose --env-file envfile -f compose.yaml up -d --force-recreate fakebook-recommendation fakebook-social-graph
+```
+
+The current Recommendation image containing the no-runtime-DDL fix is built from
+`fd1e73e1903b43cfe1a9f15a75e2dc760575234a` (or a later verified `main` image). Do not
+grant `CREATE` on schema `recommendation` to `fakebook_recommendation`. Before starting
+the service, run the three owner migrations from
+`RecommendationService/Backend-Recommendation` (`user_embedding.sql`,
+`post_embedding.sql`, and `recommendation_interactions.sql`) using the migration owner,
+then verify the runtime role has `USAGE` plus table DML only. On an existing PostgreSQL
+volume, init scripts do not run again automatically.
+
+The SocialGraph-to-Recommendation content embedding request has a separate bounded
+timeout of 180 seconds by default. Override it in `envfile` with
+`RECOMMENDATION_CONTENT_TIMEOUT_SECONDS` when the host's model/media processing needs a
+different reviewed limit; the 10-second timeout for other internal calls is unchanged.
+
 The Gateway defaults all seven Fusion transports to `127.0.0.1:1001..1007`, matching
 this Compose file's shared network namespace. To override a target without rebuilding
 the image, set one or more of these in `envfile`:
