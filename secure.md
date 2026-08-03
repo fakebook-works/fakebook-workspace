@@ -839,6 +839,32 @@ frontend **514/514**, build/lint và Compose standalone validation đều pass. 
 không có trên máy kiểm tra nên Payment Testcontainers bị skip; chưa tuyên bố runtime
 container trên `gem3` đã được kiểm chứng.
 
+## 18.5. Media finalize acknowledgement integrity (03/08/2026)
+
+The upload lifecycle now fails closed on partial finalization. Both the authenticated
+asset-finalize endpoint and the signed internal `/internal/media/finalize` endpoint
+validate the complete distinct batch before returning success. Invalid/off-server URLs
+return `400`, an owner mismatch returns `409`, and a missing file or incomplete batch
+returns `503` so the owning outbox can retry. Existing owner checks and safe leaf-path
+validation are unchanged.
+
+SocialGraph also validates the `finalized` count in the upload response, so a mixed
+deployment cannot mark an old Upload Server's `200 finalized: 0` response as completed.
+Messenger applies the same response validation for its media outbox. No database
+migration, browser-to-service shortcut, ownership relaxation or cleanup bypass was
+introduced. Pending cleanup remains enabled for genuinely abandoned uploads.
+
+The previously observed missing files cannot be reconstructed from the local workspace:
+the referenced database URLs that returned `404` have no corresponding file in the
+shared storage path, and no backup/archive copy was present here. Restore requires an
+operator-provided storage snapshot/backup; the code change prevents new losses and
+leaves existing DB references intact for such a restore.
+
+Evidence after this fix: Upload **24/24**, SocialGraph **343/343**, Messenger **81/81**;
+the complete `test-all.ps1` run exited 0. Docker is unavailable on this workstation, so
+Payment container integration was skipped; Compose was validated with the standalone
+validator only.
+
 ## 18. Chỉnh sửa, lịch sử và tombstone của bình luận (03/08/2026)
 
 Audit chức năng sửa/xoá bình luận phát hiện hai lỗi thực tế trong API cũ:
