@@ -201,6 +201,14 @@ The runtime contract is:
   authors. SocialGraph applies privacy, block and membership policy before Recommendation
   ranks that candidate pool; public discovery candidates cannot displace relationship
   candidates before this source filter runs.
+- Comment edits are author-only and serialized against the comment row. The previous tokenized
+  text and the UTC time when that version became current are retained in a bounded 20-entry JSONB
+  history, loaded lazily
+  through a trusted-viewer query that reuses current root privacy, membership and block policy.
+  Comment deletion is an idempotent tombstone: it purges text/history/mentions/likes/media while
+  preserving author, parent and child edges so nested replies remain structurally readable. A
+  tombstone cannot be liked, replied to, edited or mentioned. This uses the existing `objects.data`
+  JSONB document and therefore requires no database migration or additional runtime DDL privilege.
 - User/group photo galleries and existing-photo pickers are context-scoped and paged.
   Avatar/cover crops are separate assets. A newly uploaded avatar original creates the
   public activity `đã cập nhật ảnh đại diện`; a newly uploaded cover original creates

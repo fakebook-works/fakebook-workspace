@@ -838,3 +838,48 @@ Evidence cục bộ sau vá: SocialGraph **327/327**, Recommendation **59/59**, 
 frontend **514/514**, build/lint và Compose standalone validation đều pass. Docker daemon
 không có trên máy kiểm tra nên Payment Testcontainers bị skip; chưa tuyên bố runtime
 container trên `gem3` đã được kiểm chứng.
+
+## 18. Chỉnh sửa, lịch sử và tombstone của bình luận (03/08/2026)
+
+Audit chức năng sửa/xoá bình luận phát hiện hai lỗi thực tế trong API cũ:
+
+- `updateComment` đã kiểm tra tác giả bằng trusted caller đúng cách, nhưng `Comment` cố ý không có
+  field trong generic mutable allowlist nên đường ghi qua `UpdateObjectAsync` lọc bỏ `content`; mutation
+  có thể trả thành công mà nội dung không đổi;
+- `deleteContent` xoá cứng object Comment cùng toàn bộ association, làm mất nút cấu trúc của cây phản
+  hồi và có thể biến các reply con thành orphan.
+
+Bản vá giữ nguyên boundary xác thực/quyền hiện có và không mở generic mutable allowlist:
+
+- resolver vẫn lấy actor từ `ITrustedCallerAccessor`; chỉ tác giả hiện tại được sửa, còn policy xoá
+  không được nới rộng (ngoại lệ admin vẫn chỉ áp dụng cho đúng `GroupPost`, không áp dụng Comment);
+- domain write khoá đúng row Comment bằng PostgreSQL `FOR UPDATE`, sinh timestamp UTC phía server,
+  append bản text/token mention cũ cùng thời điểm phiên bản đó bắt đầu có hiệu lực (`create` hoặc
+  `editedAt` trước đó, cùng semantics với Messenger) và cập nhật text mới trong cùng transaction. Lịch sử chỉ giữ 20
+  revision gần nhất, không tạo revision cho no-op và không lưu snapshot tên user;
+- `commentEditHistory(commentId)` không nhận `viewerId` từ browser, lấy viewer từ trusted accessor,
+  tải lịch sử khi UI yêu cầu và tái sử dụng kiểm tra privacy của root post/reel, membership group hiện
+  tại cùng block hai chiều. Tên mention được resolve ở thời điểm đọc; entry hỏng bị bỏ qua thay vì làm
+  hỏng toàn query;
+- xoá Comment ghi tombstone trước khi cleanup. `content`, `editedAt` và `editHistory` bị purge; mention,
+  like và media association bị dọn, nhưng object, author edge, parent edge và child reply edge được giữ.
+  Vì projection kiểm tra tombstone trước media/mention/like, cleanup bị ngắt giữa chừng cũng không làm
+  lộ nội dung cũ. Xoá lặp lại là idempotent và giữ nguyên timestamp tombstone;
+- tombstone không thể like, reply, sửa hoặc thêm mention; generic content projection cũng trả text rỗng
+  và không trả media cho tombstone. Comment count tiếp tục tính node tombstone để cursor và cây reply
+  không nhảy;
+- dữ liệu mới nằm trong JSONB `social_graph.objects.data`; **không có migration DB, runtime DDL hay cấp
+  thêm quyền database**. Generic Comment mutable allowlist vẫn rỗng, chỉ domain method với key hard-code
+  mới được phép ghi các field hệ thống.
+
+Regression mới bao phủ non-author bị chặn trước domain write, trusted author pass, lưu/cap 20 revision,
+no-op không tăng history, tombstone idempotent không xoá cây, projection không trả text/media/like,
+tombstone từ chối view/interaction và history resolve tên mention hiện tại sau canonical visibility.
+Schema SocialGraph đã được export lại và cả `gateway.far`/`gateway.local.far` đã compose sạch.
+
+Evidence ngày 03/08/2026: `check-api-security-contracts.ps1` và toàn bộ `test-all.ps1` exit 0;
+Authentication **45/45**, SocialGraph **340/340**, Search **35/35**, Notification **31/31**,
+Messenger **81/81**, Payment unit **36/36**, Upload **22/22**, Gateway **53/53**,
+Recommendation **79/79**, frontend **550/550**, build/lint, encoding, secret scan và Compose standalone
+validation đều pass. Docker daemon không có trên host nên Payment Testcontainers bị skip; không tuyên
+bố runtime Docker/PostgreSQL concurrency integration đã chạy trong môi trường này.
