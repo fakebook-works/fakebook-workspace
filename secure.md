@@ -962,14 +962,17 @@ modes, cleanup and invalid values.
 
 ### 20.2. Premium success remains provider-authoritative
 
-The PayOS browser return is not treated as proof of payment. Payment now has an opt-in production startup
+The PayOS browser return is not treated as proof of payment. Payment has an opt-in production startup
 worker (`Payment__RegisterWebhookOnStartup`) that confirms the exact HTTPS Gateway endpoint
-`${Payment__PublicBaseUrl}/api/webhooks/payos` with the provider and performs bounded retries without
-blocking readiness. Activation still occurs through the existing cryptographically verified PayOS webhook,
-amount/order/payment-link checks, idempotent payment transaction and activation outbox. Cancel reconciliation
-continues to use the authenticated provider payment-link lookup; neither success nor cancel query parameters
-can grant Premium by themselves. The UI displays a pending-activation state while a paid browser return is
-waiting for the signed webhook.
+`${Payment__PublicBaseUrl}/api/webhooks/payos` with the provider without blocking readiness. Activation
+normally occurs through the cryptographically verified PayOS webhook, amount/order/payment-link checks,
+idempotent payment transaction and activation outbox. If a webhook is missed, authenticated
+`reconcilePremiumCheckout` can recover a paid order only from the SDK-verified PayOS payment-link
+response after requiring exact order/link/amount identity, `amountPaid == amount`, `amountRemaining == 0`,
+and a complete, timestamped transaction total; it writes through the same repository/outbox path.
+Neither success nor cancel query parameters can grant Premium by themselves. The UI retries this
+provider reconciliation for pending orders and stops showing an infinite spinner after its bounded
+poll window.
 Only one authoritative deployment may enable registration for a shared PayOS merchant account, so a
 development origin cannot overwrite the production callback.
 
@@ -1008,3 +1011,20 @@ SocialGraph **358/358**, Search **35/35**, Notification **31/31**, Messenger **8
 lint, encoding, secret scan and standalone Compose validation all passed. Docker is unavailable on this
 workstation, so Payment Testcontainers were skipped; no external PayOS callback or production database/runtime
 check is claimed here.
+
+## 21. Khôi phục Premium từ PayOS payment-link đã xác thực (05/08/2026)
+
+Trước đây `reconcilePremiumCheckout` chỉ xử lý trạng thái huỷ; vì vậy nếu PayOS gửi webhook bị
+bỏ lỡ, đơn đã thanh toán có thể mắc ở `PENDING` và giao diện chờ vô hạn. Luồng mới vẫn không tin
+browser return. PayOS SDK phải xác minh phản hồi truy vấn payment-link; Payment chỉ ghi nhận `PAID`
+khi `orderCode`, payment-link và số tiền khớp đơn sở hữu, `amountPaid == amount`, `amountRemaining == 0`,
+tổng các giao dịch có reference/thời gian hợp lệ khớp số tiền đã trả. Dữ liệu sau đó đi qua đúng
+`RecordVerifiedPaymentAsync` và activation outbox hiện có, với reference ổn định cho cả trường hợp
+nhiều giao dịch. Webhook vẫn là đường chính; cơ chế đối soát này là recovery idempotent và không mở
+thêm quyền hay endpoint browser-to-service.
+
+Frontend đối soát lại đơn pending khi khôi phục trang, định kỳ có giới hạn và khi người dùng nhấn
+làm mới; sau giới hạn sẽ không còn spinner vô hạn mà hiển thị hướng dẫn thử lại. Regression coverage:
+Payment unit **42/42**, frontend **571/571**, build/lint và toàn bộ `test-all.ps1` đều pass ngày
+05/08/2026. Docker daemon không có trên workstation nên Payment Testcontainers vẫn được skip; không
+tuyên bố external PayOS callback hay production database/runtime đã được kiểm thử.
