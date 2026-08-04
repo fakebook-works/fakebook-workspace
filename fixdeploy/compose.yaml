@@ -410,6 +410,7 @@ services:
       Payment__PublicBaseUrl: ${PUBLIC_ORIGIN:?Set PUBLIC_ORIGIN in .env}
       Payment__FrontendPublicUrl: ${PUBLIC_ORIGIN}
       Payment__PaymentsEnabled: ${PAYMENTS_ENABLED:-false}
+      Payment__RegisterWebhookOnStartup: ${PAYOS_REGISTER_WEBHOOK_ON_STARTUP:-true}
       Payment__CheckoutTtlMinutes: 30
       Payment__WorkerId: 7
       PayOS__ClientId: ${PAYOS_CLIENT_ID:-disabled}

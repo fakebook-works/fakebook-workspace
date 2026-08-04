@@ -159,6 +159,10 @@ The runtime contract is:
 
 - Feed privacy is dynamic at read time: `0=public`, `1=friends and current followers`,
   `2=friends`, `3=author only`. Block always wins; tags and mentions never grant access.
+- The only intentional group-context block exception is scoped to current participants of the
+  exact group being viewed: its member/admin roster and its own GroupPost author may remain
+  visible for group administration. Home, user profiles, search, other groups, comments, shares,
+  contacts and Messenger continue to enforce two-way block isolation.
 - Group admins are also members. Group posts use mentions only and are linked to their
   author plus the group through `Published`; the removed `Owned` association is not used.
 - Joining either a public or private group creates a pending request; group privacy controls
@@ -171,6 +175,10 @@ The runtime contract is:
   content or the remaining member roster. The exact group-profile preview is separately capped at
   12 and returns only the trusted viewer's current, unblocked friends in that group, including while
   a private-group request is pending. Private-group posts remain member/admin-only at read time.
+- Another user's joined/managed groups are loaded through target-scoped Gateway queries. The
+  caller is derived from trusted context, target IDs are resource identifiers only, missing
+  profiles fail closed and either block direction returns an empty result. Self-only membership
+  queries remain owner-bound.
 - `Contained=28` is the only media-parent association and `Visited=29`. `leaveGroup`
   derives the actor from the trusted Gateway context. A successful leave removes that
   actor's `Member`, optional `Admin`, inverse edges and `Visited` atomically. If the actor
@@ -219,6 +227,19 @@ The runtime contract is:
   membership, role, title and photo changes append server-only structured system messages;
   sender receipts advance with sends, while delivered and read remain separate client
   acknowledgements.
+- Selecting Messenger media creates only a browser-local object-URL preview. Multipart upload
+  starts when the user sends; a failed upload keeps the local preview available for retry and a
+  partial upload batch is cancelled by the existing pending-media lifecycle.
+- Account settings expose only display name, email and account privacy. Email replacement requires
+  the current password, is normalized and uniqueness-checked in Authentication, marks the account
+  unverified, invalidates prior email OTPs, creates a fresh bounded OTP and revokes every session in
+  one transaction before the UI returns to verification. No browser-supplied user ID is accepted.
+- SocialGraph user privacy is account mode `0=normal` (friendships only) or `1=advanced`
+  (friendships and followers), not feed-post privacy. Follow creation rechecks mode 1 on the server;
+  changing explicitly to mode 0 removes existing incoming follower edges and their inverses.
+- Premium activation remains authoritative only after a verified provider webhook. When enabled in
+  deployment, Payment confirms `${Payment__PublicBaseUrl}/api/webhooks/payos` with PayOS at startup
+  and retries transient failures; browser success/cancel query parameters never grant Premium.
 - Notification has durable realtime delivery retry, server-side unread filtering,
   unread badges, mark-one/mark-all, pagination and object deep-links.
 - Search returns authorization-filtered SocialGraph references. Fusion hydrates people,

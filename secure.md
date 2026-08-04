@@ -909,3 +909,102 @@ Messenger **81/81**, Payment unit **36/36**, Upload **22/22**, Gateway **53/53**
 Recommendation **79/79**, frontend **550/550**, build/lint, encoding, secret scan và Compose standalone
 validation đều pass. Docker daemon không có trên host nên Payment Testcontainers bị skip; không tuyên
 bố runtime Docker/PostgreSQL concurrency integration đã chạy trong môi trường này.
+
+## 19. Messenger block isolation (04/08/2026)
+
+Messenger không còn coi việc cùng ở một group là đủ để nhìn thấy nhau. SocialGraph có thêm
+permission action nội bộ chỉ-đọc `INSPECT_BLOCK`, trả riêng hai hướng `actorBlockedTarget` và
+`targetBlockedActor`; action này không cấp quyền nhắn tin và không thay thế các check
+`CREATE_DIRECT`, `SEND_DIRECT` hay `ADD_GROUP_MEMBERS`.
+
+- chat riêng trả trạng thái hai chiều để UI hiển thị đúng `Bạn đã chặn`, `Bạn đã bị chặn` hoặc
+  `Bạn đã chặn và bị đối phương chặn`; chỉ phía đã chặn mới có nút bỏ chặn;
+- gửi tin, tạo chat và typing trực tiếp vẫn fail-closed qua permission check; bỏ chặn tải lại
+  conversation hiện có, không tạo đường tắt browser-to-service;
+- danh sách conversation vẫn giữ participant bị chặn nhưng không làm hỏng toàn bộ inbox khi
+  profile liên kết bị ẩn. Frontend không hydrate `User` federated ngay trong operation Messenger
+  (Fusion có thể biến entity `null` hợp lệ thành lỗi ở field con không-null), mà lấy các profile
+  còn nhìn thấy bằng query `profiles` theo viewer, theo batch giới hạn; ID bị ẩn dùng nhãn trung
+  tính thay vì làm fail cả response. Conversation group lọc message cuối, lịch sử đọc và
+  `GetMessage` theo block hai chiều;
+- group lọc presence, typing, inbox và conversation subscription event. Khi SocialGraph không
+  thể xác minh block, đường đọc/realtime group bỏ event hoặc trả lỗi an toàn thay vì rò dữ liệu.
+
+Regression mới gồm permission inspection theo hướng, validation response signed ở Messenger và
+kiểm tra operation inbox không chọn nested federated `user`/`sender`/`systemSubject`; không có
+migration, thay đổi quyền database hoặc nới lỏng trusted caller.
+
+## 20. Account settings, Premium webhook and group-context visibility (04/08/2026)
+
+### 20.1. Secure email replacement
+
+Account settings now expose only display name, email and account privacy. Email replacement is an
+Authentication mutation whose input contains `currentPassword` and `newEmail` only; it never accepts
+a browser-supplied actor/user ID. Authentication derives the current identity from its trusted session,
+applies the existing bounded password verifier, normalizes and validates the new email, rejects duplicate
+or unchanged values, and handles the database unique race as `IDENTIFIER_EXISTS`.
+
+The email update, transition to unverified status, invalidation of prior email OTPs, insertion of a fresh
+hashed/expiring OTP, revocation of all sessions and the security audit record are committed in one database
+transaction. The audit record and logs contain no email address or password. The frontend clears its local
+session and returns to email verification; this prevents an already authenticated browser from silently
+retaining an active session after changing the login identifier.
+
+SocialGraph profile `privacy` is separately defined as account mode `0=normal` (friendships only) and
+`1=advanced` (friendships plus followers); it is not the `0..3` feed-post audience. The profile mutation
+now rejects values outside `0..1`. `followUser` derives the follower from trusted context and rechecks the
+target's current mode server-side before creating an edge. PostgreSQL serializes follow creation and account-mode
+changes for the same target with one transaction-scoped advisory lock; the post-lock policy read comes directly
+from PostgreSQL rather than a possibly stale object cache. An explicit downgrade to mode 0 removes the entire
+incoming `FollowedBy` bucket and inverse `Followed` edges in the same profile-update transaction, so neither a
+stale follower nor a concurrent follow request can retain follower-only visibility. Regression tests cover both
+modes, cleanup and invalid values.
+
+### 20.2. Premium success remains provider-authoritative
+
+The PayOS browser return is not treated as proof of payment. Payment now has an opt-in production startup
+worker (`Payment__RegisterWebhookOnStartup`) that confirms the exact HTTPS Gateway endpoint
+`${Payment__PublicBaseUrl}/api/webhooks/payos` with the provider and performs bounded retries without
+blocking readiness. Activation still occurs through the existing cryptographically verified PayOS webhook,
+amount/order/payment-link checks, idempotent payment transaction and activation outbox. Cancel reconciliation
+continues to use the authenticated provider payment-link lookup; neither success nor cancel query parameters
+can grant Premium by themselves. The UI displays a pending-activation state while a paid browser return is
+waiting for the signed webhook.
+Only one authoritative deployment may enable registration for a shared PayOS merchant account, so a
+development origin cannot overwrite the production callback.
+
+Verified-badge rendering was audited across feed/detail/shared posts, comments, stories, Reels, search,
+profiles, friend surfaces, Messenger, notifications and composers. Those surfaces already consume the
+canonical `isVerified` projection; Payment continues to update SocialGraph through its signed, retrying outbox.
+
+### 20.3. Target profile group reads
+
+`profileMemberGroups(userId, ...)` and `profileAdminGroups(userId, ...)` were added for another user's
+profile. The resolver obtains the viewer from `ITrustedCallerAccessor`; the argument is only the target
+resource ID. A missing target or either block direction returns an empty bounded page before association data
+is read. Existing `memberGroups` and `adminGroups` remain self-only. Gateway archives were recomposed after
+the schema change, so the browser still uses Gateway GraphQL and no direct service route was added.
+
+### 20.4. Narrow block exception for shared-group administration
+
+Current members/admins may see blocked participants in the member/admin list and may see a blocked author's
+GroupPost only while reading the exact shared group. The content service validates both object type and the
+canonical `PublishedIn` group association before bypassing author filtering. A caller cannot submit another
+group ID to expose a FeedPost, a post from another group or a user-profile post. Public outsiders keep normal
+two-way block filtering. Home, user profiles, search, comments, shares, contacts and Messenger are unchanged
+and continue to hide blocked users/content.
+
+### 20.5. Verification evidence and environment limit
+
+Frontend targeted coverage for Messenger local previews, settings, Premium and profile groups passed
+**114/114**; the complete frontend suite passed **559/559**, ESLint passed and the production Vite build
+completed. Schema archives for development and production composed successfully with the repository Nitro
+CLI. Security regressions were added for trusted-caller enforcement, both block directions, exact-group post
+scoping and group-member projection.
+
+The full `check-api-security-contracts.ps1` and `test-all.ps1` runs exited 0: Authentication **46/46**,
+SocialGraph **358/358**, Search **35/35**, Notification **31/31**, Messenger **83/83**, Payment unit
+**37/37**, Upload **24/24**, Gateway **53/53**, Recommendation **79/79**, frontend **560/560**, build,
+lint, encoding, secret scan and standalone Compose validation all passed. Docker is unavailable on this
+workstation, so Payment Testcontainers were skipped; no external PayOS callback or production database/runtime
+check is claimed here.
