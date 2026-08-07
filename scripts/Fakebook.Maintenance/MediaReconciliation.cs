@@ -353,8 +353,15 @@ internal static class MediaReconciliation
             return new ManagedMediaLocation(ManagedMediaLocationKind.External);
         }
 
+        var candidate = value.Trim();
         string path;
-        if (Uri.TryCreate(value, UriKind.Absolute, out var absolute))
+        // Unix treats a leading slash as an absolute file: URI. Root-relative managed
+        // application paths are not filesystem URLs and must be handled first.
+        if (candidate.StartsWith("/media/files/", StringComparison.OrdinalIgnoreCase))
+        {
+            path = candidate.Split('?', '#')[0];
+        }
+        else if (Uri.TryCreate(candidate, UriKind.Absolute, out var absolute))
         {
             path = absolute.AbsolutePath;
             if (!path.StartsWith("/media/files/", StringComparison.OrdinalIgnoreCase))
@@ -370,7 +377,7 @@ internal static class MediaReconciliation
         }
         else
         {
-            path = value.Split('?', '#')[0];
+            path = candidate.Split('?', '#')[0];
             if (!path.StartsWith("/media/files/", StringComparison.OrdinalIgnoreCase))
             {
                 return new ManagedMediaLocation(ManagedMediaLocationKind.External);
