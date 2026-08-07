@@ -42,7 +42,9 @@ JWT, or existing secret values:
 ### Security baseline
 
 - API changes must follow [the API security contract](docs/api-security-contract.md) and
-  pass `scripts/check-api-security-contracts.ps1`; coding-agent entry points are
+  pass `scripts/check-api-security-contracts.ps1`; media retention, deletion and restore
+  operations follow [the media erasure runbook](docs/media-retention-and-erasure.md);
+  coding-agent entry points are
   `AGENTS.md` and `CLAUDE.md`.
 - Edge nginx and Gateway independently rate-limit `/graphql`; Upload Server has
   edge and authenticated per-user limits.
@@ -165,6 +167,9 @@ The runtime contract is:
   contacts and Messenger continue to enforce two-way block isolation.
 - Group admins are also members. Group posts use mentions only and are linked to their
   author plus the group through `Published`; the removed `Owned` association is not used.
+- The group invitation picker is a participant-only, bounded projection separate from the
+  generic friends list. It returns only current unblocked friends who are not members/admins
+  and have no pending join request; the invite mutation rechecks the same state server-side.
 - Joining either a public or private group creates a pending request; group privacy controls
   content visibility, not admission. Only a current administrator approves membership.
   Current members/admins may invite only their current friends; an invite is a block-aware
@@ -188,8 +193,16 @@ The runtime contract is:
   exists, the leave is rejected and every association is preserved. When an administrator
   removes a non-admin member, SocialGraph rechecks the administrator under the same serialized
   group lock and atomically removes the target's Member/inverse and that group's `Visited` edge;
-  visits to other groups are preserved. A physical upload is deleted only after its final
-  content/profile/message parent is removed.
+  visits to other groups are preserved. Upload Server records a stable, signed lifecycle
+  reference for every content/profile/message parent. Detach removes only that exact parent;
+  when the final exact reference and mutation reservation are gone, Upload writes a minimal
+  non-serving tombstone before deleting the bytes immediately. A short periodic sweep is only
+  the crash-recovery path for an interrupted physical delete. Shared references remain intact,
+  the shared-storage lock coordinates multiple Upload processes, and corrupt/unreconciled legacy
+  metadata fails conservatively instead of being guessed safe to delete. Before a new public
+  media path is published, image,
+  audio and video containers are rewritten/scrubbed to remove location, capture time,
+  device/application and free-form metadata; unsafe or unsupported media fails closed.
 - Removing a group administrator owns a Serializable transaction and the shared per-group
   PostgreSQL advisory lock, preserves Member and refuses to remove the last administrator.
   `deleteGroup` keeps its browser shape but derives the actor from trusted context and deletes
@@ -223,6 +236,8 @@ The runtime contract is:
   `tôi đã cập nhật ảnh bìa của mình`. Existing-photo selections create no duplicate activity.
 - Messenger creates direct conversations idempotently on the server, exposes Message on
   friend profiles, supports the topbar overlay and at most three floating chat windows.
+  Direct create/send is allowed between any two current users unless either block direction
+  exists; friendship remains required for pre-conversation presence and group-member additions.
   Message attachments are finalized/deleted through Messenger's retrying outbox. Group
   membership, role, title and photo changes append server-only structured system messages;
   sender receipts advance with sends, while delivered and read remain separate client

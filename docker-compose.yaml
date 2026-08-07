@@ -413,7 +413,23 @@ services:
       UploadStorage__RootPath: /data/media
       UploadStorage__StagedUploadsEnabled: "true"
       UploadStorage__PendingLifetimeMinutes: 1440
-      UploadStorage__CleanupIntervalMinutes: 10
+      UploadStorage__CleanupIntervalMinutes: ${UPLOAD_CLEANUP_INTERVAL_MINUTES:-2}
+      UploadStorage__PendingCleanupGraceMinutes: 120
+      UploadStorage__ReferenceDeleteGraceMinutes: ${UPLOAD_REFERENCE_DELETE_GRACE_MINUTES:-0}
+      UploadStorage__AuthorizationReservationMinutes: ${UPLOAD_AUTHORIZATION_RESERVATION_MINUTES:-10080}
+      UploadStorage__BrowserReservationMinutes: 120
+      UploadStorage__LifecycleLockTimeoutSeconds: 15
+      UploadStorage__CleanupEnabled: ${UPLOAD_CLEANUP_ENABLED:-true}
+      UploadStorage__DeletedTombstoneRetentionMinutes: ${UPLOAD_DELETED_TOMBSTONE_RETENTION_MINUTES:-43200}
+      UploadStorage__QuarantineRetentionMinutes: ${UPLOAD_QUARANTINE_RETENTION_MINUTES:-60}
+      UploadStorage__ImageLossyQuality: ${UPLOAD_IMAGE_LOSSY_QUALITY:-78}
+      UploadStorage__PreferredStillImageFormat: ${UPLOAD_PREFERRED_STILL_IMAGE_FORMAT:-preserve}
+      UploadStorage__MaxImageDimension: ${UPLOAD_MAX_IMAGE_DIMENSION:-16384}
+      UploadStorage__MaxStoredImageDimension: ${UPLOAD_MAX_STORED_IMAGE_DIMENSION:-6144}
+      UploadStorage__MaxImagePixels: ${UPLOAD_MAX_IMAGE_PIXELS:-50000000}
+      UploadStorage__MaxAnimatedImageTotalPixels: ${UPLOAD_MAX_ANIMATED_IMAGE_TOTAL_PIXELS:-50000000}
+      UploadStorage__MaxDecodedImageBytes: ${UPLOAD_MAX_DECODED_IMAGE_BYTES:-209715200}
+      UploadStorage__AllowedMediaOrigins__0: ${PUBLIC_ORIGIN}
       InternalApi__SharedSecret: ${UPLOAD_INTERNAL_SECRET:?Set UPLOAD_INTERNAL_SECRET in .env}
       ConnectionStrings__SecurityRedis: redis:6379
       InternalAuth__RequireSignature: "true"

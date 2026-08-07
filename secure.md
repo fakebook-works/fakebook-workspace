@@ -1028,3 +1028,147 @@ làm mới; sau giới hạn sẽ không còn spinner vô hạn mà hiển thị
 Payment unit **42/42**, frontend **571/571**, build/lint và toàn bộ `test-all.ps1` đều pass ngày
 05/08/2026. Docker daemon không có trên workstation nên Payment Testcontainers vẫn được skip; không
 tuyên bố external PayOS callback hay production database/runtime đã được kiểm thử.
+
+## 22. Direct messaging and group-invite eligibility (07/08/2026)
+
+Direct conversations no longer use friendship as an authorization boundary. An authenticated caller may
+create or reuse a direct conversation with any other current user and may send or interact with direct
+messages only while neither user blocks the other. SocialGraph validates both users and both block
+directions; Messenger derives the actor from its trusted request context and performs the signed,
+fail-closed SocialGraph permission check on creation and every direct write. The normalized direct-user
+pair and database unique index remain authoritative, so repeated or reversed create requests return the
+existing conversation instead of creating duplicates. Existing blocked conversations remain readable for
+the block-state UI, but cannot be written to.
+
+Opening direct messaging to non-friends does not widen presence visibility or group-chat membership.
+`VIEW_PRESENCE` is a separate internal action which remains friend-only before a shared conversation
+exists, and `ADD_GROUP_MEMBERS` remains friend-only. Messenger rejects inconsistent permission responses
+such as an allowed write with a block flag, and network, timeout or incomplete-result failures remain
+fail-closed. The safe rolling-deployment order for the new wire action is SocialGraph first, Messenger
+second.
+
+Group invitation selection now has a dedicated Gateway GraphQL query,
+`groupInviteCandidates(groupId, limit, cursor)`, rather than reusing the generic friend list. The query
+derives the viewer from `ITrustedCallerAccessor`, requires current membership or administration, clamps
+the page to 50 and uses a keyset cursor. It returns only current friends who are not blocked in either
+direction and who are neither a member/admin nor the subject of a pending join request. Both canonical
+and legacy inverse association directions are checked. `inviteGroupUser` independently rechecks current
+participation, target type/existence, friendship, both block directions and member/admin/request state;
+therefore a stale or forged browser candidate list cannot bypass policy or emit an invitation notification.
+
+No database migration, browser-to-service shortcut, user-supplied actor identity, relaxed signing rule or
+new public REST endpoint was introduced. The SocialGraph schema was exported and both production and
+local Gateway Fusion archives were recomposed.
+
+Verification on 07/08/2026: `check-api-security-contracts.ps1` and the complete `test-all.ps1` run exited
+0; Authentication **46/46**, SocialGraph **373/373**, Search **35/35**, Notification **31/31**,
+Messenger **89/89**, Payment unit **42/42**, Upload **24/24**, Gateway **53/53**, Recommendation
+**79/79**, frontend **574/574**, production frontend build/lint, encoding, configured-secret scan and
+standalone Compose validation passed. Docker is unavailable on this workstation, so Payment
+Testcontainers were skipped; no Docker runtime, external provider or production deployment check is
+claimed.
+
+## 23. Media lifecycle, metadata privacy and shared-storage cleanup (07/08/2026)
+
+The upload/media audit found two independent failure classes: a delayed URL-only delete could
+remove the bytes after another parent reused the same URL, and two Upload Server processes sharing
+the media directory were only protected by a process-local semaphore. A transient metadata read
+failure was also previously acknowledged as a successful finalize. Files were copied byte-for-byte,
+so camera GPS, capture time, device/maker information, XMP/IPTC/comments and common QuickTime/WebM
+identifying fields could remain publicly downloadable.
+
+A read-only marker audit of the shared storage at review time (no filenames or metadata values
+were logged) found 194 JPEG files, 61 with an EXIF marker; 23 JPEG and 4 PNG files carried XMP
+markers; and at least one of 32 MP4 files carried a QuickTime/location marker. This is evidence
+that the old exact-copy path did not provide metadata privacy; it is not evidence that every
+legacy file contains GPS data.
+
+The remediation keeps the existing browser/Gateway boundary and signed internal request contract:
+
+- SocialGraph now emits a stable `socialgraph:*` reference for each Media object and each user/group
+  avatar/background slot. Messenger emits separate stable references for each message attachment,
+  thumbnail and conversation avatar. A reference is attached/detached idempotently; a URL alone is
+  not a deletion capability. Legacy URL-only outbox rows remain accepted only through a conservative
+  compatibility path.
+- Upload metadata v3 stores active references, an exact released-reference tombstone per parent,
+  exact bounded authorization reservations and a minimal asset tombstone. It deliberately removes
+  the v2 global released watermark because events for different parent IDs are not ordered by one
+  safe wildcard timestamp. All lifecycle mutations validate the complete signed batch before
+  mutation and acquire deterministic cross-process locks in the shared storage root. `operationAt`
+  is mandatory for exact lifecycle writes; stale authorization cannot resurrect a released parent,
+  and future-skewed requests fail closed with a retryable response. Released-reference history is
+  compacted to a bounded map plus a conservative floor, so high-churn reuse cannot fill metadata and
+  permanently block the final detach.
+- SocialGraph and Messenger derive stable reference IDs from server-created parent IDs. They reserve
+  the exact references before committing a media-bearing parent, persist attach/detach events in the
+  same relational transaction as that parent change, and use the database clock plus operation-
+  specific idempotency material. The supported topology points both writers at the same authoritative
+  PostgreSQL clock domain; a split-database deployment must first provide a shared monotonic lifecycle
+  sequence because independent wall clocks are not a total order. A rollback cancels only the pending
+  references from that operation and only before commit is attempted; an ambiguous commit ACK leaves
+  the bounded reservation for durable outbox repair instead of risking deletion of a committed parent.
+  Delayed finalize retries safely renew the exact reservation with the original database operation
+  time. Media lifecycle and account-erasure instructions retain bounded-backoff retries and are not
+  discarded by generic dead-letter retention.
+  Exact attach requires the trusted owner; ownerless attach/online repair is rejected. Exact detach
+  may omit an owner for server-side cascading deletion, but it still carries a signed, allowlisted
+  reference ID and cannot target a path outside Upload storage.
+- A final exact detach with no active/pending/legacy reservation first writes a minimal tombstone
+  which makes serving return not-found, then deletes the primary bytes immediately. This order closes
+  the crash window where bytes could remain publicly readable or metadata could disappear before the
+  delete completed. If the file delete is interrupted, the startup/periodic cleanup sweep retries it;
+  the deployed default sweep interval is two minutes. Shared assets survive until their last exact
+  reference is detached. Message thumbnails and profile/group slots have their own references, so
+  their derivatives are covered rather than inferred from a URL. Tombstones retain no owner, original
+  filename, content type, size or parent-reference identifiers and expire after the configured
+  audit/idempotency retention period. A duplicate detach retries only physical unlink and does not
+  extend tombstone age. Destructive SocialGraph enumeration reads authoritative PostgreSQL edges
+  directly rather than a capped/cacheable association view, including media on nested replies.
+  Corrupt, missing, pre-v2, wildcard-watermark or otherwise unreconciled lifecycle metadata remains pinned for offline repair and is
+  never treated as proof that destructive deletion is safe. Legacy URL-only outbox rows are conservative.
+  Media responses use `private, no-store`; an external CDN must provide an explicit purge contract before
+  caching is enabled.
+- New image/audio/video uploads are quarantined, rewritten/scrubbed, rechecked for magic bytes,
+  size and active content, and only then atomically published. Still JPEG, PNG, GIF, WebP and AVIF
+  images are decoded, auto-oriented, converted to sRGB, stripped and re-encoded. Lossy output quality
+  defaults to 78; output format is conservative `preserve` unless deployment opts into AVIF/WebP/JPEG,
+  and transparent input is never silently flattened into JPEG. GIF/WebP/AVIF animation is decoded and
+  re-encoded with bounded cumulative pixels and frame count; APNG fails closed because the pinned encoder
+  would flatten it. MP4/M4A user data, timestamps, handler names, free/skip padding and metadata tracks,
+  plus WebM identifying fields/tags/attachments/Void payloads are scrubbed; unknown nested/vendor metadata
+  fails closed. Image decode uses Apache-2.0 Magick.NET with its musl-native Alpine runtime, hard native
+  memory/time/profile/disk limits and at most two concurrent jobs; it adds no commercial-license requirement.
+- `UploadStorage:AllowedMediaOrigins` is explicit in Compose/local configuration for absolute URLs;
+  path-only or foreign-origin URLs are rejected. Readiness now checks both nonce storage and the
+  shared media metadata/lock path. `CleanupEnabled` allows operators to designate one cleanup owner
+  when deployments share a storage root; deploy is the default owner and `start-local.ps1` defaults
+  local cleanup off. Quarantined raw uploads are swept after one hour by default,
+  while an accepted image's stored long edge is capped at 6144 pixels by deployment configuration.
+
+This does not retroactively rewrite existing bytes automatically: current legacy metadata is marked
+unreconciled and cleanup skips it deliberately. A one-off migration must be run against a verified
+backup during a maintenance window before enabling destructive cleanup for those legacy assets.
+The read-only `Fakebook.Maintenance --reconcile-media` command now inventories SocialGraph,
+Messenger, outbox and Upload metadata into a deterministic sensitive manifest plus a non-sensitive
+SHA-256 receipt; `--apply` deliberately fails closed until the destructive migration receives its
+own review and Linux/restore evidence.
+The previously observed missing files cannot be reconstructed from this workspace; recovery requires
+an operator-provided storage snapshot/backup. The sanitizer cannot detect steganography or private
+data encoded inside compressed pixel/audio/video payloads, and documents (PDF/Office/text) retain the
+existing exact-copy behavior because their metadata policy is a separate migration.
+
+The deletion guarantee above covers the authoritative primary Upload storage. Backup snapshots,
+replicas, object-store versioning, search/recommendation projections and observability data require
+separate documented retention schedules and restore-time deletion replay. A backup restore must replay
+current tombstones before media serving is enabled. These controls support storage-minimization and
+erasure engineering requirements; they are not by themselves a legal-compliance certification.
+
+Targeted evidence after the remediation: Upload **75/75**, SocialGraph **399/399**, Messenger
+**115/115**; all three Release builds have zero warnings, the image package vulnerability audit is
+clean, the maintenance reconciliation self-test passes, and the API security-contract check passes.
+The final `scripts/test-all.ps1` run passed every reported check, including Authentication 46,
+Search 35, Notification 31, Payment 42, Gateway 53, Recommendation 79, frontend 596 tests plus
+production build/lint and standalone Compose validation. Docker,
+Alpine runtime execution, Linux/SMB
+locking and production database concurrency were not available on this workstation and are not
+claimed as passed.

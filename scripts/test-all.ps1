@@ -55,6 +55,9 @@ Invoke-FakebookCheck 'Canonical ports' $root {
 Invoke-FakebookCheck 'Maintenance and demo tooling' $root {
     & $dotnet build .\scripts\Fakebook.Maintenance\Fakebook.Maintenance.csproj
     if ($LASTEXITCODE -ne 0) { return }
+    & $dotnet run --project .\scripts\Fakebook.Maintenance\Fakebook.Maintenance.csproj --no-build -- `
+        --reconcile-media --self-test --json
+    if ($LASTEXITCODE -ne 0) { return }
     foreach ($scriptName in @('reset-demo.ps1', 'seed-demo.ps1', 'verify-demo.ps1')) {
         $tokens = $null
         $errors = $null

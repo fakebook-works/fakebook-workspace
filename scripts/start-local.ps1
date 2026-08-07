@@ -280,6 +280,69 @@ else {
 }
 $localFrontendOrigin = $config['LOCAL_FRONTEND_ORIGIN'].TrimEnd('/')
 $tailscaleOrigin = $config['TAILSCALE_ORIGIN'].TrimEnd('/')
+$publicOrigin = if ($config.ContainsKey('PUBLIC_ORIGIN')) {
+    $config['PUBLIC_ORIGIN'].TrimEnd('/')
+}
+else {
+    ''
+}
+$uploadCleanupEnabled = if ($config.ContainsKey('LOCAL_UPLOAD_CLEANUP_ENABLED')) {
+    $config['LOCAL_UPLOAD_CLEANUP_ENABLED']
+}
+else {
+    # Production/deploy is the default cleanup owner. Keeping local cleanup off avoids
+    # two hosts sweeping the same symlink/SMB media root unless the operator has explicitly
+    # verified cross-host locking. Standalone local development may opt in in .env.
+    'false'
+}
+$uploadCleanupIntervalMinutes = if ($config.ContainsKey('UPLOAD_CLEANUP_INTERVAL_MINUTES')) {
+    $config['UPLOAD_CLEANUP_INTERVAL_MINUTES']
+}
+else {
+    '2'
+}
+$uploadReferenceDeleteGraceMinutes = if ($config.ContainsKey('UPLOAD_REFERENCE_DELETE_GRACE_MINUTES')) {
+    $config['UPLOAD_REFERENCE_DELETE_GRACE_MINUTES']
+}
+else {
+    '0'
+}
+$uploadAuthorizationReservationMinutes = if ($config.ContainsKey('UPLOAD_AUTHORIZATION_RESERVATION_MINUTES')) {
+    $config['UPLOAD_AUTHORIZATION_RESERVATION_MINUTES']
+}
+else {
+    '10080'
+}
+$uploadDeletedTombstoneRetentionMinutes = if ($config.ContainsKey('UPLOAD_DELETED_TOMBSTONE_RETENTION_MINUTES')) {
+    $config['UPLOAD_DELETED_TOMBSTONE_RETENTION_MINUTES']
+}
+else {
+    '43200'
+}
+$uploadQuarantineRetentionMinutes = if ($config.ContainsKey('UPLOAD_QUARANTINE_RETENTION_MINUTES')) {
+    $config['UPLOAD_QUARANTINE_RETENTION_MINUTES']
+}
+else {
+    '60'
+}
+$uploadImageLossyQuality = if ($config.ContainsKey('UPLOAD_IMAGE_LOSSY_QUALITY')) {
+    $config['UPLOAD_IMAGE_LOSSY_QUALITY']
+}
+else {
+    '78'
+}
+$uploadPreferredStillImageFormat = if ($config.ContainsKey('UPLOAD_PREFERRED_STILL_IMAGE_FORMAT')) {
+    $config['UPLOAD_PREFERRED_STILL_IMAGE_FORMAT']
+}
+else {
+    'preserve'
+}
+$uploadMaxStoredImageDimension = if ($config.ContainsKey('UPLOAD_MAX_STORED_IMAGE_DIMENSION')) {
+    $config['UPLOAD_MAX_STORED_IMAGE_DIMENSION']
+}
+else {
+    '6144'
+}
 
 if (Test-Path -LiteralPath $processFile) {
     $registeredJson = Get-Content -LiteralPath $processFile -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -658,7 +721,22 @@ try {
         'UploadStorage__RootPath' = (Join-Path $runRoot 'media')
         'UploadStorage__StagedUploadsEnabled' = 'true'
         'UploadStorage__PendingLifetimeMinutes' = '1440'
-        'UploadStorage__CleanupIntervalMinutes' = '10'
+        'UploadStorage__CleanupIntervalMinutes' = $uploadCleanupIntervalMinutes
+        'UploadStorage__PendingCleanupGraceMinutes' = '120'
+        'UploadStorage__ReferenceDeleteGraceMinutes' = $uploadReferenceDeleteGraceMinutes
+        'UploadStorage__AuthorizationReservationMinutes' = $uploadAuthorizationReservationMinutes
+        'UploadStorage__BrowserReservationMinutes' = '120'
+        'UploadStorage__DeletedTombstoneRetentionMinutes' = $uploadDeletedTombstoneRetentionMinutes
+        'UploadStorage__QuarantineRetentionMinutes' = $uploadQuarantineRetentionMinutes
+        'UploadStorage__LifecycleLockTimeoutSeconds' = '15'
+        'UploadStorage__CleanupEnabled' = $uploadCleanupEnabled
+        'UploadStorage__ImageLossyQuality' = $uploadImageLossyQuality
+        'UploadStorage__PreferredStillImageFormat' = $uploadPreferredStillImageFormat
+        'UploadStorage__MaxStoredImageDimension' = $uploadMaxStoredImageDimension
+        'UploadStorage__AllowedMediaOrigins__0' = 'http://127.0.0.1:4001'
+        'UploadStorage__AllowedMediaOrigins__1' = $localFrontendOrigin
+        'UploadStorage__AllowedMediaOrigins__2' = $tailscaleOrigin
+        'UploadStorage__AllowedMediaOrigins__3' = $publicOrigin
         'InternalApi__SharedSecret' = $config['UPLOAD_INTERNAL_SECRET']
     })
     Wait-FakebookEndpoint 'upload' 'http://127.0.0.1:4001/health/ready' $upload

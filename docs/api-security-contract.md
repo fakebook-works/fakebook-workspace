@@ -179,8 +179,26 @@ Upload APIs retain all of these checks:
 - extension/content-type allowlist and magic-byte match;
 - request/file count and byte limits;
 - full-stream active-content audit before publish;
+- fail-closed removal of privacy metadata from every accepted image/audio/video container
+  before its generated public path becomes visible;
+- raster image decoding/re-encoding must force the already-validated MIME decoder, cap
+  dimensions/cumulative pixels/frames/native memory/time, strip profiles/comments and
+  preserve orientation/transparency/animation or reject the upload; it must never copy
+  an unsupported animation or vendor metadata record through unchanged;
 - per-user and edge rate limits;
-- owner-scoped attach/finalize/delete lifecycle;
+- owner-scoped authorization plus signed, idempotent, exact parent-reference attach/detach;
+- attach authorization before the parent transaction commits, and a durable lifecycle outbox in
+  the same database transaction as the parent mutation; rollback cancels only its exact pending
+  reservation and never hides the original parent-write failure;
+- cross-process lifecycle serialization and tombstone-before-byte deletion. The final exact
+  detach denies serving immediately and deletes primary bytes without a retention grace; a
+  periodic cleanup sweep only retries an interrupted delete. A URL-only stale event must never
+  delete an asset while any content/profile/message reference or bounded reservation remains;
+- attach requires the trusted media owner. Ownerless signed calls may detach an exact server-
+  derived reference, but may not attach/pin media or perform online legacy repair;
+- corrupt, missing or pre-reconciliation lifecycle metadata is retained for operator repair,
+  never guessed safe for destructive cleanup;
+- media responses are `private, no-store` until a verified CDN purge contract exists;
 - nosniff response header.
 
 Recommendation remote fetches must go through the SSRF guard: exact deployment allowlist,

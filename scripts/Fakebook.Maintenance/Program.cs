@@ -8,10 +8,12 @@ string[] managedSchemas = ["auth", "social_graph", "recommendation", "search", "
 
 if (args.Length == 0)
 {
-    Fail("Usage: Fakebook.Maintenance <generate-jwt-keys|preflight|apply|migrate|verify|invariants|history|security-audit|verify-service-roles|rotate-owner-password|demote-owner|activate-users> [options]");
+    Fail("Usage: Fakebook.Maintenance <generate-jwt-keys|preflight|apply|migrate|verify|invariants|history|security-audit|verify-service-roles|rotate-owner-password|demote-owner|activate-users> [options], or Fakebook.Maintenance --reconcile-media [options]");
 }
 
-var command = args[0].ToLowerInvariant();
+var command = args[0].Equals("--reconcile-media", StringComparison.OrdinalIgnoreCase)
+    ? "reconcile-media"
+    : args[0].ToLowerInvariant();
 var options = Arguments.Parse(args.Skip(1).ToArray());
 var environmentFile = options.Value("env-file");
 LoadEnvironmentFile(environmentFile);
@@ -31,6 +33,22 @@ if (command == "generate-jwt-keys")
     }, options.Flag("json"));
     return;
 }
+if (command is "reconcile-media" or "media-reconcile-audit")
+{
+    if (options.Flag("apply"))
+    {
+        Fail(
+            "Media reconciliation is audit/export only. --apply is intentionally unavailable until " +
+            "the destructive migration has independent review, backup/restore evidence, and Linux storage tests.");
+    }
+    if (options.Flag("self-test"))
+    {
+        var selfTest = MediaReconciliation.RunSelfTest();
+        Print(selfTest, options.Flag("json"));
+        if (!selfTest.Success) Environment.ExitCode = 2;
+        return;
+    }
+}
 var target = DatabaseTarget.FromEnvironment();
 var uploadPath = NormalizeOptionalPath(options.Value("upload-path"));
 var uploadTarget = options.Value("upload-target") ?? uploadPath;
@@ -42,6 +60,46 @@ var fingerprint = CreateFingerprint(target, identity, managedSchemas, uploadTarg
 
 switch (command)
 {
+    case "reconcile-media":
+    case "media-reconcile-audit":
+    {
+        if (string.IsNullOrWhiteSpace(uploadPath))
+            Fail("--reconcile-media requires --upload-path.");
+
+        var manifestOutput = NormalizeOptionalPath(options.Value("manifest-output"));
+        var receiptOutput = NormalizeOptionalPath(options.Value("receipt-output"));
+        var verifyManifest = NormalizeOptionalPath(options.Value("verify-manifest"));
+        if ((manifestOutput is not null || verifyManifest is not null) &&
+            !string.Equals(options.Value("confirm"), fingerprint, StringComparison.OrdinalIgnoreCase))
+        {
+            Fail($"Writing or verifying a sensitive media manifest requires --confirm {fingerprint}.");
+        }
+
+        var allowedOrigins = options.Values("allowed-origin")
+            .Concat(options.Values("allowed-media-origin"))
+            .Concat((Environment.GetEnvironmentVariable("UPLOAD_ALLOWED_MEDIA_ORIGINS") ?? string.Empty)
+                .Split([',', ';'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (allowedOrigins.Length == 0)
+            Fail("--reconcile-media requires --allowed-origin (repeatable) or UPLOAD_ALLOWED_MEDIA_ORIGINS.");
+
+        var result = await MediaReconciliation.RunAsync(
+            connection,
+            fingerprint,
+            new MediaReconciliationOptions(
+                uploadPath!,
+                allowedOrigins,
+                WritersStopped: options.Flag("writers-stopped"),
+                ServingStopped: options.Flag("serving-stopped"),
+                AcquireExclusiveLock: options.Flag("exclusive-lock"),
+                ManifestOutput: manifestOutput,
+                ReceiptOutput: receiptOutput,
+                VerifyManifest: verifyManifest));
+        Print(result.Summary, options.Flag("json"));
+        Environment.ExitCode = result.ExitCode;
+        break;
+    }
     case "security-audit":
     {
         var roles = new List<object>();
