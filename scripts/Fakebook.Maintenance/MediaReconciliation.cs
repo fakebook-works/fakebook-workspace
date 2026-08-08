@@ -348,6 +348,20 @@ internal static class MediaReconciliation
         string? value,
         IReadOnlySet<string> allowedOrigins)
     {
+        const int maxLocationLength = 2_048;
+        if (value is null)
+        {
+            return new ManagedMediaLocation(ManagedMediaLocationKind.External);
+        }
+
+        if (value.Length > maxLocationLength)
+        {
+            // A lifecycle/reference value can originate in durable outbox rows. Bound it
+            // before trimming or URI parsing so a malformed row cannot force repeated large
+            // allocations during reconciliation.
+            return new ManagedMediaLocation(ManagedMediaLocationKind.InvalidManaged);
+        }
+
         if (string.IsNullOrWhiteSpace(value))
         {
             return new ManagedMediaLocation(ManagedMediaLocationKind.External);
@@ -466,6 +480,13 @@ internal static class MediaReconciliation
             "encoded-path-separator-blocked",
             NormalizeManagedMediaLocation(
                 $"https://fakebook.example/media/files/{assetA}.avif%5Cother.jpg",
+                allowedOrigins).Kind == ManagedMediaLocationKind.InvalidManaged,
+            failures,
+            ref tests);
+        Check(
+            "oversized-location-blocked",
+            NormalizeManagedMediaLocation(
+                "/media/files/" + new string('a', 2_049),
                 allowedOrigins).Kind == ManagedMediaLocationKind.InvalidManaged,
             failures,
             ref tests);

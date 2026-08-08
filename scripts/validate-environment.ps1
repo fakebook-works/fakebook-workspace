@@ -13,13 +13,25 @@ if (-not (Test-Path -LiteralPath $EnvironmentFile)) {
 
 $values = @{}
 Get-Content -LiteralPath $EnvironmentFile -Encoding UTF8 | ForEach-Object {
-    $line = $_.Trim()
+    $rawLine = $_
+    if ($rawLine.Length -gt 65536) {
+        throw 'Environment file contains an oversized line.'
+    }
+
+    $line = $rawLine.Trim()
     if ($line.Length -eq 0 -or $line.StartsWith('#') -or -not $line.Contains('=')) {
         return
     }
 
     $parts = $line.Split('=', 2)
-    $values[$parts[0]] = $parts[1]
+    $name = $parts[0].Trim()
+    if ($name -notmatch '^[A-Za-z_][A-Za-z0-9_]{0,127}$') {
+        throw "Environment file contains an invalid variable name: '$name'."
+    }
+    if ($values.ContainsKey($name)) {
+        throw "Environment file contains a duplicate variable: '$name'."
+    }
+    $values[$name] = $parts[1]
 }
 
 if (-not $values.ContainsKey('SMTP_ENABLE_SSL') -and $values.ContainsKey('EnableSsl')) {
@@ -141,16 +153,28 @@ if (-not [int]::TryParse($values['EDGE_PORT'], [ref]$edgePort) -or $edgePort -lt
 }
 
 $tailscaleUri = $null
-if (-not [uri]::TryCreate($values['TAILSCALE_ORIGIN'], [UriKind]::Absolute, [ref]$tailscaleUri) -or $tailscaleUri.Scheme -ne 'https') {
-    throw 'TAILSCALE_ORIGIN must be an absolute HTTPS URL.'
+if (-not [uri]::TryCreate($values['TAILSCALE_ORIGIN'], [UriKind]::Absolute, [ref]$tailscaleUri) -or
+    $tailscaleUri.Scheme -ne 'https' -or
+    [string]::IsNullOrWhiteSpace($tailscaleUri.Host) -or
+    -not [string]::IsNullOrEmpty($tailscaleUri.UserInfo) -or
+    -not [string]::IsNullOrEmpty($tailscaleUri.Query) -or
+    -not [string]::IsNullOrEmpty($tailscaleUri.Fragment) -or
+    $tailscaleUri.AbsolutePath -ne '/') {
+    throw 'TAILSCALE_ORIGIN must be an HTTPS origin without credentials, path, query, or fragment.'
 }
 if ($values['MEDIA_HOST'].TrimEnd('.') -ne $tailscaleUri.DnsSafeHost.TrimEnd('.')) {
     throw 'MEDIA_HOST must exactly match the hostname in TAILSCALE_ORIGIN.'
 }
 
 $localUri = $null
-if (-not [uri]::TryCreate($values['LOCAL_FRONTEND_ORIGIN'], [UriKind]::Absolute, [ref]$localUri) -or $localUri.Scheme -notin 'http', 'https') {
-    throw 'LOCAL_FRONTEND_ORIGIN must be an absolute HTTP or HTTPS URL.'
+if (-not [uri]::TryCreate($values['LOCAL_FRONTEND_ORIGIN'], [UriKind]::Absolute, [ref]$localUri) -or
+    $localUri.Scheme -notin 'http', 'https' -or
+    [string]::IsNullOrWhiteSpace($localUri.Host) -or
+    -not [string]::IsNullOrEmpty($localUri.UserInfo) -or
+    -not [string]::IsNullOrEmpty($localUri.Query) -or
+    -not [string]::IsNullOrEmpty($localUri.Fragment) -or
+    $localUri.AbsolutePath -ne '/') {
+    throw 'LOCAL_FRONTEND_ORIGIN must be an HTTP(S) origin without credentials, path, query, or fragment.'
 }
 
 if (-not $SkipNetwork) {

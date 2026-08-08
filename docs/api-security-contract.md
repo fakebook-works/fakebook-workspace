@@ -37,6 +37,41 @@ Do not expose a subgraph port, add a browser-to-service REST shortcut, or let fr
 service URLs directly. A new public REST route needs a written reason plus authentication,
 authorization, content-type validation, a body-size cap, rate limiting and security tests.
 
+### Canonical text and input limits
+
+Frontend `maxLength` attributes are a usability aid only. The owning service must normalize
+and validate again before a lookup, write, log, outbox event or remote fetch. The canonical
+ceilings are:
+
+| Input | Maximum |
+| --- | ---: |
+| Email address | 254 characters |
+| Display name | 80 Unicode scalars |
+| Profile description/location | 255 Unicode scalars each |
+| Post text | 63,206 Unicode scalars |
+| Comment text | 8,000 Unicode scalars |
+| Messenger text | 20,000 Unicode scalars |
+| Story visible text | 125 Unicode scalars (validated background marker excluded) |
+| Group name/description | 120 / 2,000 Unicode scalars |
+| Conversation title | 120 Unicode scalars |
+| Search keyword | 200 Unicode scalars and at most 12 distinct terms |
+| Media URL | 2,048 characters; media lists contain at most 10 items |
+| Uploaded original filename | 255 characters and 1,024 UTF-8 bytes |
+
+Birthdates use the GraphQL `LocalDate` scalar and a `DateOnly` service contract, not an
+arbitrary string. SocialGraph accepts real dates from 1900-01-01 through the current UTC
+date and stores the canonical `yyyy-MM-dd` representation. Email identifiers are bounded,
+ASCII, structurally validated and lower-cased before persistence/lookups.
+
+User-visible text is normalized (NFKC for SocialGraph/Search/Recommendation, NFC for
+Messenger), malformed Unicode is rejected, and control, bidi/format, private-use and
+unassigned code points are not persisted. Combining-mark runs and totals are bounded to
+prevent Zalgo/rendering denial of service while preserving ordinary languages and emoji.
+Protocol metadata such as correlation IDs, idempotency keys, asset identifiers and managed
+URLs uses a narrow bounded ASCII policy. Passwords are never trimmed or Unicode-normalized;
+Auth instead validates well-formed UTF-16 and rejects values above BCrypt's 72 UTF-8-byte
+boundary.
+
 Gateway must continue to enforce query parser, depth, field-cycle, planner, execution
 timeout/concurrency and request-rate limits. Do not bypass Fusion by proxying arbitrary
 GraphQL documents to a subgraph.
