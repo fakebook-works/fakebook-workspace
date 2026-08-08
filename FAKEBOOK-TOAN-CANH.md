@@ -625,6 +625,11 @@ Upload không quyết định post có visible hay không. Nó chỉ quyết đ�
 
 Messenger quản lý state hội thoại, nhưng không tự sở hữu friend/block policy. Với direct conversation, Messenger phải hỏi SocialGraph.
 
+Direct conversation và direct message được phép giữa mọi user active khi không có block ở cả
+hai hướng. Friendship không còn là điều kiện nhắn tin, nhưng vẫn là điều kiện để xem presence
+trước khi hai người có hội thoại chung và để thêm thành viên vào group chat. Cặp direct user được
+chuẩn hóa và có unique index, nên gọi tạo lại trả hội thoại cũ thay vì tạo bản sao.
+
 Các rule quan trọng:
 
 - conversation member check trên mọi read/mutation;
@@ -802,7 +807,7 @@ Admin removal/demotion cũng dùng group lock và không được xóa admin cu�
 Gateway
   → Messenger trusted user
   → verify conversation/member
-  → SocialGraph friend/block permission
+  → SocialGraph kiểm tra target tồn tại và block hai chiều
   → validate text/clientMessageId/attachments
   → idempotency lookup
   → lock conversation + sequence
@@ -1357,4 +1362,3 @@ Browser
 ~~~
 
 Nếu một thay đổi phá vỡ một trong các điểm trên, đặc biệt là actor từ input, direct browser-to-service shortcut, bypass block/privacy/ownership, unsafe retry hoặc fail-open khi Redis/signature lỗi, thì thay đổi đó đi ngược kiến trúc bảo mật của Fakebook.
-

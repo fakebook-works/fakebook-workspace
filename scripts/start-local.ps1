@@ -252,6 +252,17 @@ function Enable-FakebookTailscaleServe {
     return $true
 }
 
+function Get-ConfigOrDefault {
+    param(
+        [hashtable]$Config,
+        [string]$Name,
+        [string]$Default
+    )
+
+    $value = [string]$Config[$Name]
+    return $(if ([string]::IsNullOrWhiteSpace($value)) { $Default } else { $value })
+}
+
 $environmentFile = Join-Path $root '.env'
 & (Join-Path $PSScriptRoot 'validate-environment.ps1') -EnvironmentFile $environmentFile
 $config = Read-DotEnv $environmentFile
@@ -661,6 +672,26 @@ try {
         'RECOMMENDATION_VIDEO_MAX_BYTES' = '524288000'
         'RECOMMENDATION_MAX_VIDEO_FRAMES' = '24'
         'RECOMMENDATION_MAX_MEDIA_PIXELS' = '40000000'
+        'RECOMMENDATION_ADVANCED_RANKING_ENABLED' = Get-ConfigOrDefault $config 'RECOMMENDATION_ADVANCED_RANKING_ENABLED' 'true'
+        'RECOMMENDATION_EXPLORATION_ENABLED' = Get-ConfigOrDefault $config 'RECOMMENDATION_EXPLORATION_ENABLED' 'true'
+        'RECOMMENDATION_FRESHNESS_ENABLED' = Get-ConfigOrDefault $config 'RECOMMENDATION_FRESHNESS_ENABLED' 'true'
+        'RECOMMENDATION_DIVERSITY_ENABLED' = Get-ConfigOrDefault $config 'RECOMMENDATION_DIVERSITY_ENABLED' 'true'
+        'RECOMMENDATION_SEEN_SUPPRESSION_ENABLED' = Get-ConfigOrDefault $config 'RECOMMENDATION_SEEN_SUPPRESSION_ENABLED' 'true'
+        'RECOMMENDATION_IMPRESSION_RERANKING_ENABLED' = Get-ConfigOrDefault $config 'RECOMMENDATION_IMPRESSION_RERANKING_ENABLED' 'true'
+        'RECOMMENDATION_FRESHNESS_HALF_LIFE_HOURS' = Get-ConfigOrDefault $config 'RECOMMENDATION_FRESHNESS_HALF_LIFE_HOURS' '72'
+        'RECOMMENDATION_EXPLORATION_RATE' = Get-ConfigOrDefault $config 'RECOMMENDATION_EXPLORATION_RATE' '0.12'
+        'RECOMMENDATION_SEMANTIC_WEIGHT' = Get-ConfigOrDefault $config 'RECOMMENDATION_SEMANTIC_WEIGHT' '0.58'
+        'RECOMMENDATION_FRESHNESS_WEIGHT' = Get-ConfigOrDefault $config 'RECOMMENDATION_FRESHNESS_WEIGHT' '0.20'
+        'RECOMMENDATION_SOURCE_WEIGHT' = Get-ConfigOrDefault $config 'RECOMMENDATION_SOURCE_WEIGHT' '0.10'
+        'RECOMMENDATION_EXPLORATION_WEIGHT' = Get-ConfigOrDefault $config 'RECOMMENDATION_EXPLORATION_WEIGHT' '0.12'
+        'RECOMMENDATION_MAX_AUTHOR_QUOTA' = Get-ConfigOrDefault $config 'RECOMMENDATION_MAX_AUTHOR_QUOTA' '3'
+        'RECOMMENDATION_MAX_GROUP_QUOTA' = Get-ConfigOrDefault $config 'RECOMMENDATION_MAX_GROUP_QUOTA' '4'
+        'RECOMMENDATION_SEEN_TTL_DAYS' = Get-ConfigOrDefault $config 'RECOMMENDATION_SEEN_TTL_DAYS' '30'
+        'RECOMMENDATION_IMPRESSION_PENALTY' = Get-ConfigOrDefault $config 'RECOMMENDATION_IMPRESSION_PENALTY' '0.06'
+        'RECOMMENDATION_RETENTION_CLEANUP_INTERVAL_SECONDS' = Get-ConfigOrDefault $config 'RECOMMENDATION_RETENTION_CLEANUP_INTERVAL_SECONDS' '3600'
+        'RECOMMENDATION_RETENTION_CLEANUP_BATCH_SIZE' = Get-ConfigOrDefault $config 'RECOMMENDATION_RETENTION_CLEANUP_BATCH_SIZE' '1000'
+        'RECOMMENDATION_RETENTION_CLEANUP_MAX_BATCHES' = Get-ConfigOrDefault $config 'RECOMMENDATION_RETENTION_CLEANUP_MAX_BATCHES' '10'
+        'RECOMMENDATION_RETENTION_CLEANUP_TIME_BUDGET_SECONDS' = Get-ConfigOrDefault $config 'RECOMMENDATION_RETENTION_CLEANUP_TIME_BUDGET_SECONDS' '30'
         'PYTHONUNBUFFERED' = '1'
     }
     Wait-FakebookEndpoint 'recommendation' 'http://127.0.0.1:1003/health/ready' $recommendation

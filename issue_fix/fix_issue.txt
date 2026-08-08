@@ -1,0 +1,135 @@
+Đúng cách với project nhiều repository là tạo Sprint ở cấp GitHub Organization Project, không tạo Sprint trong từng repository.
+
+  Git chỉ quản lý source code, branch, commit và tag. GitHub Issues/Milestones/Projects mới là nơi quản lý công việc. Một Organization Project có thể chứa Issue và Pull Request từ nhiều repository khác nhau. GitHub Projects
+  (https://docs.github.com/en/issues/planning-and-tracking-with-projects/creating-projects/creating-a-project)
+
+  ## Cấu trúc nên dùng cho Fakebook
+
+  Tạo một Organization Project, ví dụ:
+
+  fakebook-works
+  └── Projects
+      └── Fakebook Product Delivery
+
+  Thêm các repository:
+
+  - Backend-Authentication
+  - API-Gateway
+  - Backend-SocialGraph
+  - Backend-Recommendation
+  - Backend-Search
+  - Backend-Messaging
+  - Backend-Notification
+  - Backend-Payment
+  - Upload-Server
+  - Frontend
+
+  Không thêm fakebook-workspace nếu bạn muốn giữ đúng phạm vi hiện tại.
+
+  Trong Project nên tạo các field:
+
+  - Status: Todo, In Progress, In Review, Done
+  - Sprint: Iteration, mỗi iteration dài 2 tuần
+  - Priority: High, Medium, Low
+  - Estimate: Story Points
+  - Repository
+  - Assignee
+  - Parent issue
+  - Sub-issue progress
+
+  GitHub hỗ trợ Iteration field để biểu diễn các Sprint lặp lại theo tuần hoặc theo hai tuần. GitHub Iteration Fields
+  (https://docs.github.com/en/enterprise-cloud%40latest/issues/planning-and-tracking-with-projects/understanding-fields/about-iteration-fields)
+
+  ## Cách biểu diễn Sprint
+
+  Với kế hoạch 8 tuần hiện tại, tạo bốn iteration:
+
+  Sprint 1 – Weeks 1–2
+  Sprint 2 – Weeks 3–4
+  Sprint 3 – Weeks 5–6
+  Sprint 4 – Weeks 7–8
+
+  Trong đó:
+
+  Sprint 4 – Week 7: Production deployment begins
+  Sprint 4 – Week 8: Stabilisation and release
+
+  Không nên dùng GitHub Milestone làm Sprint toàn hệ thống, vì Milestone gắn với từng repository. Sprint nên dùng Project Iteration field để toàn bộ repository nhìn thấy cùng một chu kỳ.
+
+  Milestone có thể dùng cho các mục tiêu lớn hơn, chẳng hạn:
+
+  Milestone: Core Foundation
+  Milestone: Social Core and Media
+  Milestone: Communication and Discovery
+  Milestone: Production Release
+
+  Nếu muốn dùng Milestone cho nhiều repository, bạn có thể tạo milestone cùng tên trong từng repository, nhưng Sprint vẫn nên quản lý ở Organization Project.
+
+  ## Ví dụ một feature được chia theo repository
+
+  Giả sử Sprint 3 có feature Messaging.
+
+  Tạo một parent issue, ví dụ trong Backend-Messaging:
+
+  Feature: Implement Fakebook Messaging
+
+  Sau đó tạo các sub-issue ở các repository liên quan:
+
+  Backend-Messaging:
+    Implement conversations, messages and outbox
+
+  Backend-SocialGraph:
+    Add friendship, block and conversation permission checks
+
+  Backend-Notification:
+    Create message notification delivery
+
+  API-Gateway:
+    Compose messaging GraphQL schema and configure trusted secret
+
+  Frontend:
+    Implement messenger UI and SSE reconnect behavior
+
+  Testing:
+    Add integration, authorization and replay-protection tests
+
+  Tất cả issue này được thêm vào Organization Project và đặt:
+
+  Sprint = Sprint 3 – Weeks 5–6
+  Status = Todo/In Progress/Review/Done
+
+  GitHub hiện hỗ trợ tạo sub-issue từ repository khác nếu repository đó thuộc cùng Organization owner. Adding sub-issues (https://docs.github.com/en/enterprise-cloud%40latest/issues/tracking-your-work-with-issues/adding-sub-issues)
+
+  ## Các view nên tạo
+
+  Trong Fakebook Product Delivery, nên tạo:
+
+  1. Board view
+
+  Todo → In Progress → In Review → Done
+
+  2. Sprint table
+
+  Group theo Sprint, hiển thị:
+
+  Issue | Repository | Assignee | Priority | Estimate | Status
+
+  3. Roadmap view
+
+  Hiển thị bốn Sprint và mốc production deployment ở Week 7.
+
+  4. Repository view
+
+  Filter theo từng repository để mỗi thành viên xem phần việc của service mình.
+
+  ## Có tạo trực tiếp được không?
+
+  Về mặt kỹ thuật, mình có thể tạo Organization Project, Iteration fields, Issues và liên kết sub-issues nếu có quyền write đối với GitHub Organization Projects và các repository. Tuy nhiên session hiện tại không có GitHub CLI hoặc GitHub
+  Projects authentication được cấu hình, nên mình không thể tự tạo trực tiếp trên Organization của bạn một cách an toàn.
+
+  Bạn có thể tạo thủ công tại:
+
+  Organization → Projects → New project
+
+  Sau khi tạo Project, các Issue vẫn được tạo trong từng repository riêng, rồi add vào Organization Project. Đây là mô hình phù hợp nhất cho Fakebook: mỗi thành viên làm Issue trong service của mình, nhưng cả nhóm theo dõi toàn bộ feature
+  và Sprint ở một Project chung.
