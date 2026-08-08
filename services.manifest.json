@@ -1,5 +1,5 @@
 {
-    "generatedAtUtc":  "2026-08-08T12:10:03Z",
+    "generatedAtUtc":  "2026-08-08T12:57:26Z",
     "services":  {
                      "APIGateway":  {
                                         "path":  "APIGateway/API-Gateway",
@@ -68,7 +68,7 @@
                                       "path":  "Frontend/Frontend",
                                       "remote":  "https://github.com/fakebook-works/Frontend.git",
                                       "branch":  "main",
-                                      "commit":  "28b25006c8d88f4d88cb4ddab4f4f5f7fa1c24d2",
+                                      "commit":  "dd0594fb761d2c9ca596119c77bb49e7cf0d45cf",
                                       "clean":  true
                                   }
                  }
