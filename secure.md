@@ -748,6 +748,13 @@ user. Query dành cho quản trị viên `groupJoinRequests` nay đọc cạnh 1
 Resolver và read model đều xác minh Admin hiện tại từ trusted actor, page bị clamp tối đa 50,
 và việc lọc block hai chiều/profile đã xoá hiện có vẫn được giữ nguyên.
 
+`pendingGroupJoinRequests` bổ sung theo hướng additive và trả `{ group, requestedAt }` từ chính
+timestamp Unix-millisecond của cạnh 17; query `pendingGroupJoins` cũ không đổi shape. Migration
+`20260808_add_group_join_requested_at.sql` thêm generated column `requested_at` cho cạnh 17/18,
+tự backfill request cũ mà không tạo clock thứ hai có thể lệch. Frontend không còn lưu/ước đoán
+thời điểm request bằng localStorage. Thứ tự rolling deployment an toàn là migration owner,
+SocialGraph, Gateway archive rồi Frontend.
+
 `groupFriendMembers(groupId, limit)` là projection tối thiểu dành cho header profile nhóm riêng tư.
 Nó không nhận viewer ID từ browser, clamp tối đa 12 và chỉ trả giao của Friend hiện tại với
 Member/Admin hiện tại của đúng group sau khi lọc block hai chiều/profile đã xoá. Query vẫn dùng được

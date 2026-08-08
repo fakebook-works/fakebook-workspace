@@ -174,6 +174,9 @@ The runtime contract is:
   content visibility, not admission. Only a current administrator approves membership.
   Current members/admins may invite only their current friends; an invite is a block-aware
   notification and never bypasses the request/approval flow.
+  `pendingGroupJoinRequests` is the additive timestamp-aware projection used by the Groups UI:
+  each item contains the group plus the server-owned request creation time. The compatibility
+  query `pendingGroupJoins` keeps its original shape for rolling deployments.
 - Group discovery is a bounded metadata-only projection and recommends both public and private
   groups joined by the viewer's current friends. It returns a distinct friend count, at most three
   minimal friend previews and the previous UTC day's post count; it never returns private post
