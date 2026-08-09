@@ -1178,3 +1178,58 @@ production build/lint and standalone Compose validation. Docker,
 Alpine runtime execution, Linux/SMB
 locking and production database concurrency were not available on this workstation and are not
 claimed as passed.
+
+## 09/08/2026 - Time-decayed recommendation interests and passive-view integrity
+
+Recommendation no longer treats its recursively updated compatibility vector as an immutable
+source of truth. The additive owner migrations `recommendation_interest_model.sql` and
+`recommendation_impression_aggregates.sql` create a
+deterministic per-user anchor and bounded action-specific signal state. LIKE/SAVE are exact
+timestamp-conditional toggles; UNLIKE/UNSAVE leave retention-bounded inactive tombstones so a
+delayed older event cannot reactivate an undone preference. SHARE, COMMENT and attentive WATCH
+signals saturate instead of growing without bound. Signal contributions are recomputed with
+action-specific finite half-lives for each new recommendation session; an already issued session
+keeps its stable ID snapshot. Storage is capped per user, effective ranking reads are independently
+bounded, expired rows are removed first, and capacity eviction may remove only a reproducible
+aggregate signal; it never removes a live LIKE/SAVE state or undo tombstone. A bounded per-user
+ledger cursor reconciles interaction events written by an older worker during a rolling deployment.
+
+Passive-view metrics preserve the existing browser -> Gateway GraphQL -> SocialGraph -> signed
+Recommendation boundary. The browser does not submit a viewer ID, content ownership or trusted
+content type. SocialGraph derives the caller from the authenticated context, batch-hydrates every
+target with current privacy, group-membership and two-way block policy, silently omits unavailable
+targets, derives POST/VIDEO_POST/REEL and own-content state from that authorized projection, and stamps the
+event with the database clock. Recommendation accepts the new fields as nullable only for rolling
+compatibility. Own-content exposure can update seen suppression but cannot train the owner's
+interest vector. Missing user/target projections remain retryable and cannot be recreated by an
+impression after account/content erasure.
+
+Client metrics count only meaningful viewport exposure while the document is visible and focused.
+Long posts use a bounded visible-pixel threshold so a card taller than the viewport is measurable;
+Reels require the active visible player. Static post learning uses attentive absolute dwell;
+FeedPost video uses hybrid attentive dwell and real playback progress; Reel learning uses accumulated
+active playback and completion, not raw `currentTime`, so seeking cannot manufacture a completion
+signal. Total playback duration is not an idle test: a genuinely watched long Reel remains valid.
+Incidental contact is neutral, a user-driven rapid scroll/skip is a small bounded negative, and hidden,
+unfocused or non-progressing playback is ignored. Batching is bounded and
+server-deduplicated; page-lifecycle delivery stays on authenticated Gateway GraphQL with a small
+`fetch keepalive` request. Background telemetry cannot refresh/expire the interactive login, and an
+account switch aborts and discards the old generation so a request cannot be retried under the next
+account.
+
+Migration 8 also closes rolling-worker ordering and erasure races at the database boundary. Its
+interaction trigger acquires the per-user transaction lock before allocating `ingestion_id`, so an
+uncommitted older insert cannot appear after a cursor has advanced beyond it. The trigger rejects
+interaction inserts when the lifecycle-provisioned user embedding no longer exists, preventing an
+old worker from recreating Recommendation state after account deletion. Target advisory locks use a
+fail-fast retryable path under contention instead of waiting into a cross-user high/low lock cycle.
+The exact invoker trigger body, search path, function execute grant, identity sequence and indexes
+remain part of startup schema validation.
+
+The new migrations follow the existing owner/runtime split: production runtime must not receive DDL
+rights, and startup/readiness fails closed unless the interest, semantic-exposure and reconciliation
+tables, their exact columns, keys, indexes, validated CHECK constraints and required DML grants are
+present. Existing migration files and checksums remain immutable once issued. Unit/contract evidence
+and any unavailable infrastructure checks are listed
+in the handoff for this change; this section does not claim a production migration or deployment was
+executed.

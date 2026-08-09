@@ -164,7 +164,7 @@ function Start-FakebookProcess {
     }
     $processes.Add($entry)
     $processes | ConvertTo-Json | Set-Content -LiteralPath $processFile -Encoding UTF8
-    Write-Host "Started $Name on 127.0.0.1:$Port (PID $($process.Id))."
+    Write-Host "Launched $Name on 127.0.0.1:$Port (PID $($process.Id)); waiting for readiness."
     return $process
 }
 
@@ -454,6 +454,18 @@ $searchDb = New-ServiceDatabaseConnection 'SEARCH'
 $notificationDb = New-ServiceDatabaseConnection 'NOTIFICATION'
 $messengerDb = New-ServiceDatabaseConnection 'MESSENGER'
 $paymentDb = New-ServiceDatabaseConnection 'PAYMENT'
+$recommendationUser = [Uri]::EscapeDataString($config['RECOMMENDATION_DB_USER'])
+$recommendationPassword = [Uri]::EscapeDataString($config['RECOMMENDATION_DB_PASSWORD'])
+$recommendationDatabase = [Uri]::EscapeDataString($config['DB_NAME'])
+$recommendationRuntimeDatabaseUrl = "postgresql://$recommendationUser`:$recommendationPassword@$($config['DB_HOST']):$($config['DB_PORT'])/$recommendationDatabase`?options=-csearch_path%3Drecommendation%2Cpublic"
+Invoke-CheckedCommand `
+    -Name 'Validate Recommendation runtime schema' `
+    -WorkingDirectory (Join-Path $root 'RecommendationService\Backend-Recommendation') `
+    -FilePath $python `
+    -ArgumentList @('-m', 'ForFakebook.schema_preflight') `
+    -Environment @{
+        'DATABASE_URL' = $recommendationRuntimeDatabaseUrl
+    }
 $socialGraphProjectRoot = Join-Path $root 'SocialGraphService\SocialGraph.Api'
 $socialGraphSchemaPath = Join-Path $runRoot 'social-graph.schema.graphqls'
 $gatewaySocialGraphSchemaPath = Join-Path $root 'APIGateway\API-Gateway\fakebookGateway\Gateway\schema\SocialGraph\schema.graphqls'
@@ -651,11 +663,8 @@ try {
     })
     Wait-FakebookEndpoint 'messaging' 'http://127.0.0.1:1006/health/ready' $messaging
 
-    $recommendationUser = [Uri]::EscapeDataString($config['RECOMMENDATION_DB_USER'])
-    $recommendationPassword = [Uri]::EscapeDataString($config['RECOMMENDATION_DB_PASSWORD'])
-    $recommendationDatabase = [Uri]::EscapeDataString($config['DB_NAME'])
     $recommendation = Start-FakebookProcess -Name 'recommendation' -Port 1003 -WorkingDirectory (Join-Path $root 'RecommendationService\Backend-Recommendation') -FilePath $python -ArgumentList @('-m', 'uvicorn', 'ForFakebook.EmbeddingModel:app', '--host', '127.0.0.1', '--port', '1003') -Environment @{
-        'DATABASE_URL' = "postgresql://$recommendationUser`:$recommendationPassword@$($config['DB_HOST']):$($config['DB_PORT'])/$recommendationDatabase`?options=-csearch_path%3Drecommendation%2Cpublic"
+        'DATABASE_URL' = $recommendationRuntimeDatabaseUrl
         'RECOMMENDATION_DB_MIGRATIONS_ENABLED' = 'false'
         'INTERNAL_SHARED_SECRET' = $config['RECOMMENDATION_GATEWAY_SECRET']
         'RECOMMENDATION_INTERNAL_SECRET' = $config['RECOMMENDATION_INTERNAL_SECRET']
@@ -686,6 +695,7 @@ try {
         'RECOMMENDATION_EXPLORATION_WEIGHT' = Get-ConfigOrDefault $config 'RECOMMENDATION_EXPLORATION_WEIGHT' '0.12'
         'RECOMMENDATION_MAX_AUTHOR_QUOTA' = Get-ConfigOrDefault $config 'RECOMMENDATION_MAX_AUTHOR_QUOTA' '3'
         'RECOMMENDATION_MAX_GROUP_QUOTA' = Get-ConfigOrDefault $config 'RECOMMENDATION_MAX_GROUP_QUOTA' '4'
+        'RECOMMENDATION_MAX_CONTENT_TYPE_STREAK' = Get-ConfigOrDefault $config 'RECOMMENDATION_MAX_CONTENT_TYPE_STREAK' '3'
         'RECOMMENDATION_SEEN_TTL_DAYS' = Get-ConfigOrDefault $config 'RECOMMENDATION_SEEN_TTL_DAYS' '30'
         'RECOMMENDATION_IMPRESSION_PENALTY' = Get-ConfigOrDefault $config 'RECOMMENDATION_IMPRESSION_PENALTY' '0.06'
         'RECOMMENDATION_RETENTION_CLEANUP_INTERVAL_SECONDS' = Get-ConfigOrDefault $config 'RECOMMENDATION_RETENTION_CLEANUP_INTERVAL_SECONDS' '3600'

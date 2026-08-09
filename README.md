@@ -225,6 +225,15 @@ The runtime contract is:
   authors. SocialGraph applies privacy, block and membership policy before Recommendation
   ranks that candidate pool; public discovery candidates cannot displace relationship
   candidates before this source filter runs.
+- Recommendation keeps a deterministic user anchor plus bounded, action-specific interest
+  signals. LIKE/SAVE are exact timestamped toggles, SHARE/COMMENT and attentive views
+  saturate, and every signal decays with its own finite half-life before a new feed/Reel
+  session is ranked. SocialGraph derives `POST`, hybrid `VIDEO_POST` or `REEL`, ownership, visibility and the
+  trusted event time after current privacy/block checks; the browser supplies neither the
+  actor nor those policy facts. Static posts learn from attentive absolute dwell, video posts
+  combine attentive dwell with real playback progress, and Reels learn from active playback and
+  completion. Incidental contact and idle/background playback are
+  neutral, and a high-confidence rapid scroll/skip is only a bounded weak negative.
 - Comment edits are author-only and serialized against the comment row. The previous tokenized
   text and the UTC time when that version became current are retained in a bounded 20-entry JSONB
   history, loaded lazily
